@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SVG Master</title>
+<link rel="icon" href="data:," />
+<script>
+/* 主题：默认跟随系统。必须在样式表加载前落定，否则会闪一帧错误配色。 */
+(function () {
+  var m = 'system';
+  try { m = localStorage.getItem('svgmaster.theme') || 'system'; } catch (e) { m = 'system'; }
+  var sysDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  var dark = m === 'dark' || (m === 'system' && sysDark);
+  document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme-mode', m);
+})();
+/* 静态子资源（style.css / app.js）无法携带 X-App-Token 头，
+   因此把顶层 URL 的 ?k= 令牌转发到它们的查询串上。 */
+(function () {
+  var k = new URLSearchParams(location.search).get('k') || '';
+  window.__APP_TOKEN__ = k;
+  var q = k ? ('?k=' + encodeURIComponent(k)) : '';
+  var link = document.createElement('link');
+  link.rel = 'stylesheet';
+  link.href = 'style.css' + q;
+  document.head.appendChild(link);
+  window.__assetURL = function (p) { return p + q; };
+})();
+</script>
+</head>
+<body>
+<div class="app">
+
+  <!-- ── 顶栏 ───────────────────────────────────────────── -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">SVG</span>
+      <span class="brand-text"><b>SVG Master</b></span>
+    </div>
+    <nav class="tabs" id="tabs">
+      <button class="tab active" type="button" data-tab="gen">预览</button>
+      <button class="tab" type="button" data-tab="code">代码</button>
+      <button class="tab" type="button" data-tab="stream">日志流</button>
+    </nav>
+    <div class="spacer"></div>
+    <div class="top-actions">
+      <button class="model-badge" id="modelBadge" type="button" title="切换模型">
+        <i class="dot idle" id="badgeDot"></i><span id="modelBadgeText">未选择模型</span><i class="caret">▾</i>
+      </button>
+      <button class="btn icon" id="btnTheme" type="button" title="主题：跟随系统"></button>
+      <button class="btn" id="btnClear" type="button" title="清空对话上下文（图层与画布保留）">清空上下文</button>
+      <button class="btn" id="btnProject" type="button" title="切换 / 新建 / 保存工程">工程</button>
+      <button class="btn" id="btnCopy" type="button">复制 SVG</button>
+      <button class="btn primary" id="btnSave" type="button">保存 SVG</button>
+    </div>
+    <div class="model-menu hidden" id="modelMenu"></div>
+  </header>
+
+  <div class="banner hidden" id="banner">
+    <span class="banner-ic">!</span><span id="bannerText"></span>
+    <button class="banner-x" id="bannerClose" type="button" title="关闭">×</button>
+  </div>
+
+  <!-- ── 工作区 ─────────────────────────────────────────── -->
+  <main class="workspace">
+
+    <!-- 左栏 -->
+    <aside class="left" id="left">
+
+      <div class="group">
+        <div class="group-head"><span>生成</span><span class="muted tiny" id="canvasHint"></span></div>
+        <div class="fld"><span>生成方式</span>
+          <div class="gen-switch" id="genSwitch" title="拖动或点击切换：快速模式一次成图；多图层模式分步按图层改造；动图模式单图层输出可播放动图">
+            <div class="gen-track" id="genTrack" role="radiogroup" aria-label="生成方式">
+              <div class="gen-thumb" id="genThumb" aria-hidden="true"></div>
+              <button class="gen-opt" type="button" data-mode="quick" role="radio" aria-checked="false">快速</button>
+              <button class="gen-opt" type="button" data-mode="layers" role="radio" aria-checked="false">多图层</button>
+              <button class="gen-opt" type="button" data-mode="anim" role="radio" aria-checked="false">动图</button>
+            </div>
+            <div class="gen-hint" id="genHint"></div>
+          </div>
+        </div>
+        <label class="fld"><span>提示词</span>
+          <textarea id="prompt" rows="4" spellcheck="false" placeholder="描述你要生成的 SVG…"></textarea>
+        </label>
+        <div class="fld"><span>比例预设</span>
+          <div class="sel" id="canvasSel">
+            <button class="sel-btn" type="button"><span class="sel-label">—</span><i class="caret">▾</i></button>
+            <div class="sel-menu hidden"></div>
+          </div>
+        </div>
+        <div class="fld"><span>思考等级</span>
+          <div class="sel" id="thinkingSel">
+            <button class="sel-btn" type="button"><span class="sel-label">—</span><i class="caret">▾</i></button>
+            <div class="sel-menu hidden"></div>
+          </div>
+        </div>
+        <div class="fld"><span>图片输入（可选）</span>
+          <div class="drop" id="drop">
+            <b>拖拽 / 粘贴 / 点击选择</b>
+            <small>长边自动缩放至 1568px，输出 PNG</small>
+          </div>
+          <div class="thumbs" id="thumbs"></div>
+          <input type="file" id="fileInput" accept="image/*" multiple hidden />
+        </div>
+        <div class="row2 run-row">
+          <button class="btn primary run-btn" id="btnRun" type="button">开始生成</button>
+        </div>
+      </div>
+
+      <div class="group last">
+        <div class="row2 even">
+          <button class="btn" id="btnProviders" type="button">管理供应商</button>
+          <button class="btn" id="btnPrompts" type="button">提示词库</button>
+        </div>
+      </div>
+    </aside>
+
+    <button class="rail-toggle" id="leftToggle" type="button" title="折叠 / 展开左栏">‹</button>
+
+    <!-- 中栏 -->
+    <section class="center">
+
+      <!-- 画布视图 -->
+      <div class="pane" id="paneGen">
+        <div class="canvas-toolbar">
+          <div class="stat"><span class="k">viewBox</span><span class="v mono" id="statViewBox">—</span></div>
+          <div class="stat"><span class="k">尺寸</span><span class="v mono" id="statSize">—</span></div>
+          <div class="stat"><span class="k">元素</span><span class="v mono" id="statElements">—</span></div>
+          <div class="stat"><span class="k">字节</span><span class="v mono" id="statBytes">—</span></div>
+          <div class="spacer"></div>
+          <span class="zoom-label mono" id="zoomLabel">100%</span>
+          <button class="btn sm" id="btnFit" type="button">适应窗口</button>
+          <button class="btn sm" id="btnOne" type="button">1:1</button>
+        </div>
+
+        <div class="anim-bar hidden" id="animBar">
+          <button class="btn sm" id="btnAnimPlay" type="button" title="播放 / 暂停">▶</button>
+          <label class="anim-fps" title="帧率（每秒帧数）">帧率
+            <input type="number" id="animFps" min="1" max="30" step="1" value="8" />
+          </label>
+          <span class="anim-pos mono" id="animPos">—</span>
+          <span class="spacer"></span>
+          <button class="btn sm" id="btnGif" type="button" title="把当前动图导出为 GIF">导出 GIF</button>
+        </div>
+
+        <div class="canvas-scroll" id="canvasScroll">
+          <div class="svg-host" id="svgHost"><div class="empty">尚未生成 SVG</div></div>
+        </div>
+
+        <div class="issues" id="issues"><div class="issue info">等待生成…</div></div>
+      </div>
+
+      <!-- 代码视图 -->
+      <div class="pane hidden" id="paneCode">
+        <div class="canvas-toolbar">
+          <div class="stat"><span class="k">行数</span><span class="v mono" id="codeLines">—</span></div>
+          <div class="stat"><span class="k">字节</span><span class="v mono" id="codeBytes">—</span></div>
+          <div class="stat"><span class="k">折叠</span><span class="v mono" id="codeFolds">0</span></div>
+          <div class="spacer"></div>
+          <button class="btn sm" id="btnWrap" type="button">自动换行</button>
+          <button class="btn sm" id="btnFoldAll" type="button">全部折叠</button>
+          <button class="btn sm" id="btnUnfoldAll" type="button">全部展开</button>
+          <button class="btn sm" id="btnCopyCode" type="button">复制代码</button>
+        </div>
+        <div class="code-view mono" id="codeView"></div>
+        <div class="issues" id="codeIssues"><div class="issue info">尚未生成 SVG</div></div>
+      </div>
+
+      <!-- 日志流 -->
+      <div class="pane hidden" id="paneStream">
+        <div class="pane-head">
+          <span>日志流</span>
+          <span class="muted tiny">思维链与正文只显示摘要，全文见右侧「模型输出」</span>
+          <span class="spacer"></span>
+          <label class="check inline"><input type="checkbox" id="pauseBig" /><span>暂停滚动</span></label>
+        </div>
+        <div class="big-log mono" id="bigLog"></div>
+      </div>
+    </section>
+
+    <!-- 右栏 -->
+    <aside class="right" id="right">
+      <div class="rblock usage">
+        <div class="rhead"><span>上下文用量</span><b id="usagePct">0%</b></div>
+        <div class="meter"><i id="usageBar"></i></div>
+        <div class="kv"><span>used / max</span><b class="mono" id="usageUsed">0 / 0</b></div>
+        <div class="kv"><span>压缩块</span><b class="mono" id="usageBlocks">0</b></div>
+        <div class="kv"><span>TPS</span><b class="mono" id="usageTps">0.0</b></div>
+        <div class="kv"><span>tokens</span><b class="mono" id="usageTokens">0</b></div>
+        <div class="kv"><span>模型轮 / 工具</span><b class="mono" id="usageSteps">0 / 0</b></div>
+      </div>
+
+      <div class="rblock layers" id="layerBlock">
+        <div class="rhead">
+          <span>图层</span>
+          <span class="spacer"></span>
+          <span class="muted tiny" id="layerMeta">—</span>
+          <button class="mini" id="btnAddLayer" type="button" title="新建图层">＋</button>
+        </div>
+        <div class="layer-list" id="layerList">
+          <div class="flow-empty">（没有图层）</div>
+        </div>
+        <div class="layer-foot">
+          <span class="muted tiny" id="layerActive">当前：—</span>
+          <span class="spacer"></span>
+          <button class="mini" id="btnLayerUp" type="button" title="上移一层">↑</button>
+          <button class="mini" id="btnLayerDown" type="button" title="下移一层">↓</button>
+          <button class="mini danger" id="btnLayerDel" type="button" title="删除当前图层">删</button>
+        </div>
+      </div>
+
+      <div class="rblock agent">
+        <div class="rhead"><span>Agent</span></div>
+        <div class="agent-body">
+          <label class="fld"><span>最大步数</span>
+            <input id="maxSteps" type="number" min="1" max="200" step="1" />
+          </label>
+          <label class="check"><input type="checkbox" id="autoValidate" /><span>自动校验</span></label>
+          <label class="check"><input type="checkbox" id="compressOn" /><span>上下文压缩</span></label>
+          <label class="check"><input type="checkbox" id="streamOff" /><span>非流式兜底</span></label>
+          <label class="fld"><span>压缩阈值 <b id="compressAtLabel">75%</b></span>
+            <input id="compressAt" type="range" min="50" max="95" step="1" />
+          </label>
+        </div>
+      </div>
+
+      <!-- 模型输出：思维链与正文按到达顺序交替成流 -->
+      <div class="rblock raw">
+        <div class="rhead">
+          <span>模型输出</span>
+          <span class="spacer"></span>
+          <span class="muted tiny" id="rawMeta">0 字</span>
+        </div>
+        <div class="flow-body" id="flowBody">
+          <div class="flow-empty">（尚无输出）</div>
+        </div>
+        <div class="raw-foot">
+          <label class="check inline"><input type="checkbox" id="flowAuto" checked /><span>自动滚动</span></label>
+          <span class="spacer"></span>
+          <button class="mini" id="btnClearRaw" type="button">清空</button>
+        </div>
+      </div>
+    </aside>
+  </main>
+</div>
+
+<!-- ── 供应商管理弹窗 ───────────────────────────────────── -->
+<div class="modal hidden" id="modalProviders">
+  <div class="modal-box wide">
+    <div class="modal-head">
+      <b>供应商管理</b>
+      <button class="mini" type="button" data-close>×</button>
+    </div>
+    <div class="modal-body provider-body">
+      <div class="prov-list">
+        <div class="prov-list-head">
+          <span>供应商</span>
+          <button class="mini" id="btnNewProv" type="button">+ 新建</button>
+        </div>
+        <div class="prov-items" id="provList"></div>
+        <div class="prov-list-foot">
+          <button class="mini danger" id="btnDelProv" type="button">删除当前</button>
+        </div>
+      </div>
+      <div class="prov-form" id="provForm">
+        <label class="fld"><span>名称</span><input id="pfName" spellcheck="false" /></label>
+        <div class="fld"><span>协议</span><div class="proto-grid" id="pfProto"></div></div>
+        <label class="chk"><input type="checkbox" id="pfExtended" /><span>扩展思考（增加 xhigh 极致 / max 最大 两档）</span></label>
+        <label class="fld"><span>Base URL</span><input id="pfBase" class="mono" spellcheck="false" /></label>
+        <label class="fld"><span>API Key</span>
+          <span class="input-row">
+            <input id="pfKey" type="password" class="mono" spellcheck="false" autocomplete="off" />
+            <button class="btn icon" id="pfEye" type="button" title="显示 / 隐藏">◉</button>
+          </span>
+        </label>
+        <div class="fld"><span>模型列表</span>
+          <div class="model-add">
+            <input id="pfModelInput" class="mono" spellcheck="false" placeholder="model id" />
+            <button class="mini" id="btnAddModel" type="button">添加</button>
+            <button class="mini" id="btnFetchProv" type="button">获取模型列表</button>
+          </div>
+          <div class="model-list mono" id="pfModels"></div>
+        </div>
+        <div class="fld"><span>能力覆盖（留空 = 自动推断）</span>
+          <div class="caps-wrap"><table class="caps" id="pfCaps"></table></div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <span class="muted tiny" id="provHint"></span>
+      <span class="spacer"></span>
+      <button class="btn" type="button" data-close>关闭</button>
+      <button class="btn primary" id="btnProvSave" type="button">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── 提示词库弹窗 ─────────────────────────────────────── -->
+<div class="modal hidden" id="modalPrompts">
+  <div class="modal-box wide">
+    <div class="modal-head">
+      <b>提示词库</b>
+      <button class="mini" type="button" data-close>×</button>
+    </div>
+    <div class="prompt-toolbar">
+      <input id="promptSearch" class="mono" spellcheck="false" placeholder="搜索标题 / 分类 / 模板…" />
+      <div class="cats" id="promptCats"></div>
+    </div>
+    <div class="prompt-grid" id="promptGrid"></div>
+  </div>
+</div>
+
+<!-- ── 确认弹窗 ─────────────────────────────────────────── -->
+<div class="modal hidden" id="modalConfirm">
+  <div class="modal-box confirm-box">
+    <div class="modal-head">
+      <b id="confirmTitle">确认操作</b>
+      <button class="mini" type="button" data-close>×</button>
+    </div>
+    <div class="confirm-body">
+      <span class="confirm-ic" id="confirmIcon">!</span>
+      <p id="confirmText"></p>
+    </div>
+    <div class="modal-foot">
+      <span class="spacer"></span>
+      <button class="btn" type="button" data-close>取消</button>
+      <button class="btn danger" id="confirmOk" type="button">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── 工程弹窗（顶部「工程」与启动选择共用这三个方框） ──────── -->
+<div class="modal hidden" id="modalProject">
+  <div class="modal-box">
+    <div class="modal-head">
+      <b id="projTitle">工程</b>
+      <span class="muted tiny" id="projPath">—</span>
+      <button class="mini" id="projClose" type="button" title="关闭">×</button>
+    </div>
+    <div class="modal-body proj-body">
+      <div class="proj-tiles">
+        <button class="proj-tile" id="btnQuickNew" type="button">
+          <b>快速生成</b><small>空画板直接开工</small>
+        </button>
+        <button class="proj-tile" id="btnProjNew" type="button">
+          <b>新建项目</b><small>填名字后选文件夹</small>
+        </button>
+        <button class="proj-tile" id="btnProjOpen" type="button">
+          <b>打开项目</b><small>直接选项目文件夹</small>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── 新建项目：只填名字，确认后再选文件夹 ──────────────── -->
+<div class="modal hidden" id="modalNewProj">
+  <div class="modal-box">
+    <div class="modal-head">
+      <b>新建项目</b>
+      <span class="muted tiny" id="newProjHint">确认后选择存放文件夹</span>
+      <button class="mini" type="button" data-close>×</button>
+    </div>
+    <div class="modal-body proj-body">
+      <label class="fld"><span>项目名</span>
+        <input id="projNameInput" spellcheck="false" placeholder="例如 海报-01" />
+      </label>
+      <div class="row2 even">
+        <button class="btn primary" id="btnProjCreate" type="button">确认</button>
+        <button class="btn" type="button" data-close>取消</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<input type="file" id="dirPicker" webkitdirectory directory multiple class="hidden" />
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* gif.js 是纯函数式的 GIF89a 编码器，没有依赖；加载完再插入 app.js，
+   保证 app.js 初始化时 window.GIFEncoder 已就绪。两者都要带令牌。 */
+(function () {
+  var q = window.__APP_TOKEN__ ? ('?k=' + encodeURIComponent(window.__APP_TOKEN__)) : '';
+  function loadApp() {
+    var s = document.createElement('script');
+    s.src = 'app.js' + q;
+    document.body.appendChild(s);
+  }
+  var g = document.createElement('script');
+  g.src = 'gif.js' + q;
+  g.onload = loadApp;
+  g.onerror = loadApp; // 编码器缺失时也要让主程序起来，导出按钮自行降级
+  document.body.appendChild(g);
+})();
+</script>
+</body>
+</html>

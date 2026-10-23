@@ -1,0 +1,371 @@
+[
+  {
+    "id": "logo-monogram-geometric",
+    "category": "Logo/Brand",
+    "title": "几何字母标志",
+    "template": "Design a flat vector logo mark for {{subject}}. Build the mark from simple geometric primitives, use one accent color plus neutral tones, keep generous clear space, no gradients, no photorealism, centered on a square canvas.",
+    "note": "最通用的品牌标志写法，几何构图加单色点缀，模型不容易画脏。",
+    "ratio": "Logo 方形 512",
+    "source": "https://github.com/cliprise/awesome-ai-logo-generator-prompts"
+  },
+  {
+    "id": "logo-wordmark-horizontal",
+    "category": "Logo/Brand",
+    "title": "横版字标",
+    "template": "Create a horizontal wordmark logo for {{subject}}. Place a compact abstract symbol on the left and the brand name in a geometric sans-serif on the right, single weight, tight letter spacing, one color, transparent background.",
+    "note": "横版字标适合导航栏，符号与文字的间距要在提示词里点明。",
+    "ratio": "Logo 横版 800×240",
+    "source": "https://github.com/cliprise/awesome-ai-logo-generator-prompts"
+  },
+  {
+    "id": "logo-badge-emblem",
+    "category": "Logo/Brand",
+    "title": "徽章式标志",
+    "template": "Draw a circular badge emblem logo for {{subject}}. Use a double ring border, a small central pictogram, and short curved text around the ring, flat two-color palette, symmetrical composition.",
+    "note": "徽章类要强调对称与环形文字，否则文字会飘出边界。",
+    "ratio": "Logo 方形 512",
+    "source": "builtin"
+  },
+  {
+    "id": "logo-abstract-gradient",
+    "category": "Logo/Brand",
+    "title": "抽象渐变标记",
+    "template": "Produce a modern abstract logo mark for {{subject}}. Overlap two or three smooth organic shapes, apply a subtle two-stop linear gradient, keep the silhouette recognizable at 24px, no text.",
+    "note": "渐变标记要限两三个色标，色标多了导出会发灰。",
+    "ratio": "Logo 方形 512",
+    "source": "builtin"
+  },
+  {
+    "id": "logo-mascot-flat",
+    "category": "Logo/Brand",
+    "title": "吉祥物标志",
+    "template": "Illustrate a friendly flat mascot logo for {{subject}}. Simple rounded body, bold outline, two colors plus white, big expressive eyes, standing pose, no background clutter, suitable for a sticker.",
+    "note": "吉祥物标志关键是轮廓简洁，缩到小尺寸仍要认得出。",
+    "ratio": "Logo 方形 512",
+    "source": "builtin"
+  },
+  {
+    "id": "logo-negative-space",
+    "category": "Logo/Brand",
+    "title": "负空间标志",
+    "template": "Design a clever negative space logo for {{subject}}. Let the shape of the mark carve a second hidden symbol out of the background, two colors only, flat vector, generous margins.",
+    "note": "负空间标志靠留白暗示第二层含义，提示词要点明隐藏图形。",
+    "ratio": "Logo 方形 512",
+    "source": "https://github.com/cliprise/awesome-ai-logo-generator-prompts"
+  },
+  {
+    "id": "icon-line-24",
+    "category": "Icon",
+    "title": "24px 线性图标",
+    "template": "Draw a single 24x24 line icon representing {{subject}}. Use a 2px stroke with round caps and joins, no fill, align to a 24 unit grid with 2 unit padding, pure monochrome.",
+    "note": "线性图标的规范写进提示词，产出可直接放进工具栏。",
+    "ratio": "图标 24×24",
+    "source": "builtin"
+  },
+  {
+    "id": "icon-filled-64",
+    "category": "Icon",
+    "title": "64px 面性图标",
+    "template": "Create a filled 64x64 app icon for {{subject}}. Use one solid silhouette, soft rounded corners, a subtle darker shade for depth, and a plain background shape, no text.",
+    "note": "面性图标靠剪影识别，别让模型加太多细节。",
+    "ratio": "图标 64×64",
+    "source": "builtin"
+  },
+  {
+    "id": "icon-duotone-pair",
+    "category": "Icon",
+    "title": "双色图标",
+    "template": "Design a duotone icon for {{subject}}. Split the shape into a primary solid area and a 40 percent opacity secondary area, 64x64 viewport, no strokes, flat and minimal.",
+    "note": "双色图标用透明度分层最稳，避免模型乱调色。",
+    "ratio": "图标 64×64",
+    "source": "builtin"
+  },
+  {
+    "id": "icon-set-grid",
+    "category": "Icon",
+    "title": "四宫格图标组",
+    "template": "Produce a 2x2 grid of four consistent line icons about {{subject}}. Keep identical stroke width and optical size, 8 unit padding inside each cell, monochrome, aligned to one grid.",
+    "note": "成组图标的一致性来自统一线宽与栅格，提示词里必须写死。",
+    "ratio": "1:1 方形 512",
+    "source": "builtin"
+  },
+  {
+    "id": "icon-status-badge",
+    "category": "Icon",
+    "title": "状态徽标图标",
+    "template": "Draw a small status badge icon for {{subject}}. Circular container, one glyph inside, a clear high-contrast color, 24x24 grid, no gradients, readable when scaled down.",
+    "note": "状态类图标要的是小尺寸可读，别追求细节。",
+    "ratio": "图标 24×24",
+    "source": "builtin"
+  },
+  {
+    "id": "illustration-pelican-bicycle",
+    "category": "Illustration",
+    "title": "骑自行车的鹈鹕（经典基准）",
+    "template": "A pelican riding a bicycle.",
+    "note": "LLM 画图能力的老牌基准，用来快速验证模型是否真的输出 SVG。",
+    "ratio": "1:1 方形",
+    "source": "https://simonwillison.net/tags/pelican-riding-a-bicycle/"
+  },
+  {
+    "id": "illustration-flat-scene",
+    "category": "Illustration",
+    "title": "扁平场景插画",
+    "template": "Create a flat vector illustration of {{subject}}. Compose three depth layers, use a limited five-color palette, no outlines, soft geometric shapes, and a clear focal point in the center.",
+    "note": "分层是扁平插画的关键，写清前景中景远景更好控制。",
+    "ratio": "16:9 宽屏",
+    "source": "https://github.com/ximinng/LLM4SVG"
+  },
+  {
+    "id": "illustration-isometric",
+    "category": "Illustration",
+    "title": "等距视角插画",
+    "template": "Illustrate {{subject}} in isometric projection. Use 30 degree axes, consistent block proportions, flat shading with three tones per face, and a plain background.",
+    "note": "等距插画靠 30 度轴和统一明暗，比例写清楚才不会歪。",
+    "ratio": "1:1 方形",
+    "source": "https://github.com/ximinng/LLM4SVG"
+  },
+  {
+    "id": "illustration-hero-banner",
+    "category": "Illustration",
+    "title": "首屏横幅插画",
+    "template": "Design a wide hero banner illustration about {{subject}}. Keep the left third visually calm for headline text, place the main subject on the right, use a smooth background gradient and flat vector shapes.",
+    "note": "首屏横幅要预留文字区，否则后期排版会被图压住。",
+    "ratio": "横幅 1584×396",
+    "source": "builtin"
+  },
+  {
+    "id": "illustration-line-art",
+    "category": "Illustration",
+    "title": "极简单线插画",
+    "template": "Draw a minimal continuous line illustration of {{subject}}. Use one 3px stroke, a single color on a plain background, generous negative space, no shading, no fill.",
+    "note": "单线风格靠留白，提示词里限定笔画数更稳。",
+    "ratio": "1:1 方形",
+    "source": "builtin"
+  },
+  {
+    "id": "diagram-flow-horizontal",
+    "category": "Diagram",
+    "title": "横向流程示意图",
+    "template": "Create a clean left-to-right flow diagram explaining {{subject}}. Use rounded rectangles for steps, arrows between them, a muted palette, sans-serif labels at 16px, and a light background.",
+    "note": "流程图要把方向、节点形状、字号都写明，模型才不乱放文字。",
+    "ratio": "16:9 宽屏",
+    "source": "builtin"
+  },
+  {
+    "id": "diagram-architecture-layers",
+    "category": "Diagram",
+    "title": "分层架构图",
+    "template": "Draw a layered architecture diagram for {{subject}}. Stack three horizontal bands, put labeled boxes inside each band, connect related boxes with orthogonal lines, use one accent color for emphasis.",
+    "note": "架构图的横平竖直很重要，正交连线比曲线更好读。",
+    "ratio": "16:9 宽屏",
+    "source": "builtin"
+  },
+  {
+    "id": "diagram-timeline",
+    "category": "Diagram",
+    "title": "时间轴",
+    "template": "Generate a horizontal timeline diagram about {{subject}}. Draw one baseline with evenly spaced milestones, alternate labels above and below, use dots and thin connectors, keep typography small and tidy.",
+    "note": "时间轴节点数要写死，不然模型会挤出一堆重叠标签。",
+    "ratio": "16:9 宽屏",
+    "source": "builtin"
+  },
+  {
+    "id": "diagram-venn",
+    "category": "Diagram",
+    "title": "维恩图",
+    "template": "Create a two-circle Venn diagram comparing {{subject}}. Use translucent fills with clear overlap, centered labels in each region, thin outlines, and a short caption below.",
+    "note": "维恩图用半透明填充才能看清交集区域。",
+    "ratio": "4:3 标准",
+    "source": "builtin"
+  },
+  {
+    "id": "diagram-org-chart",
+    "category": "Diagram",
+    "title": "组织结构图",
+    "template": "Draw an org chart for {{subject}}. Place one root node at the top, three children below connected by orthogonal elbows, identical rounded boxes, even spacing, monochrome with one accent header.",
+    "note": "组织图的关键是等距对齐，提示词里给出层数与分支数。",
+    "ratio": "4:3 标准",
+    "source": "builtin"
+  },
+  {
+    "id": "ui-dashboard-wireframe",
+    "category": "UI Mock",
+    "title": "仪表盘线框稿",
+    "template": "Produce a wireframe-style dashboard mockup for {{subject}}. Include a top bar, a left sidebar, three stat cards and one large chart area, gray placeholder blocks, a single accent color, 8px spacing grid.",
+    "note": "线框稿比高保真稿稳定，重点在栅格与占位块。",
+    "ratio": "16:9 宽屏",
+    "source": "builtin"
+  },
+  {
+    "id": "ui-mobile-login",
+    "category": "UI Mock",
+    "title": "移动端登录页",
+    "template": "Design a mobile login screen mockup for {{subject}}. Phone frame at 9:16, logo at the top, two input fields, one primary button, one text link, plenty of vertical rhythm, flat colors.",
+    "note": "移动稿先定外框比例，再排元素，模型才不会把内容压扁。",
+    "ratio": "9:16 竖屏",
+    "source": "builtin"
+  },
+  {
+    "id": "ui-landing-hero",
+    "category": "UI Mock",
+    "title": "落地页首屏",
+    "template": "Create a landing page hero section mockup for {{subject}}. Headline on the left, product visual on the right, a primary call-to-action button, a slim navigation bar on top, soft neutral background.",
+    "note": "首屏稿的价值在信息层级，标题、按钮、图三者的权重写明。",
+    "ratio": "16:9 宽屏",
+    "source": "builtin"
+  },
+  {
+    "id": "ui-settings-panel",
+    "category": "UI Mock",
+    "title": "设置面板",
+    "template": "Draw a settings panel mockup for {{subject}}. Group options into labeled sections, use toggles and dropdowns as simple shapes, align everything to a 8px grid, one accent color, light theme.",
+    "note": "设置面板靠分组标题和控件形状区分，别让模型自由发挥。",
+    "ratio": "4:3 标准",
+    "source": "builtin"
+  },
+  {
+    "id": "ui-data-table",
+    "category": "UI Mock",
+    "title": "数据表格页",
+    "template": "Produce a data table screen mockup for {{subject}}. Include a header row with five columns, eight body rows with placeholder text bars, zebra striping, a pagination footer, and a filter bar above.",
+    "note": "表格要写清行列数，否则行高会失控。",
+    "ratio": "16:9 宽屏",
+    "source": "builtin"
+  },
+  {
+    "id": "chart-bar-compare",
+    "category": "Chart",
+    "title": "柱状对比图",
+    "template": "Generate a bar chart visualizing {{subject}}. Draw axes with ticks, five bars with value labels above them, a subtle grid, a legend, and a 20px bold title. Use a restrained two-color palette.",
+    "note": "图表可读性靠刻度、数值标签和图例三件套。",
+    "ratio": "4:3 标准",
+    "source": "builtin"
+  },
+  {
+    "id": "chart-line-trend",
+    "category": "Chart",
+    "title": "折线趋势图",
+    "template": "Create a line chart showing the trend of {{subject}}. Plot two series with distinct colors, add markers at each point, a light area fill under the primary series, labeled axes and a small legend.",
+    "note": "折线图要限定数据点数量，点太密标签会叠在一起。",
+    "ratio": "16:9 宽屏",
+    "source": "builtin"
+  },
+  {
+    "id": "chart-donut-share",
+    "category": "Chart",
+    "title": "环形占比图",
+    "template": "Draw a donut chart breaking down {{subject}} into four parts. Use distinct flat colors, a small gap between segments, percentage labels outside the ring, and a centered total number.",
+    "note": "环形图分段不要超过五段，否则颜色和标签都会挤。",
+    "ratio": "1:1 方形",
+    "source": "builtin"
+  },
+  {
+    "id": "chart-gauge-meter",
+    "category": "Chart",
+    "title": "仪表盘刻度",
+    "template": "Create a semicircular gauge chart for {{subject}}. Draw a 180 degree arc with a colored progress portion, tick marks every 10 percent, a large centered value, and a short caption below.",
+    "note": "仪表盘用半圆最稳，整圆容易和环形图混淆。",
+    "ratio": "4:3 标准",
+    "source": "builtin"
+  },
+  {
+    "id": "chart-heatmap-grid",
+    "category": "Chart",
+    "title": "热力矩阵图",
+    "template": "Produce a heatmap grid visualizing {{subject}}. Use a 7x5 matrix of rounded squares, one hue with varying opacity, row and column labels in 12px, and a compact legend strip on the right.",
+    "note": "热力图用单色透明度表达强度，比多色渐变更清晰。",
+    "ratio": "4:3 标准",
+    "source": "builtin"
+  },
+  {
+    "id": "character-flat-avatar",
+    "category": "Character",
+    "title": "扁平角色头像",
+    "template": "Illustrate a flat vector character portrait of {{subject}} in a half-body composition. Use bold simple shapes, a limited palette, no outline heavier than 3px, friendly proportions, and a plain circular background.",
+    "note": "角色类要限定构图范围，否则模型会堆满全身细节。",
+    "ratio": "头像 400×400",
+    "source": "builtin"
+  },
+  {
+    "id": "character-sticker-mascot",
+    "category": "Character",
+    "title": "贴纸吉祥物",
+    "template": "Draw a sticker-style mascot of {{subject}}. Thick white outline around the whole figure, exaggerated expression, simple three-color palette, dynamic pose, no background.",
+    "note": "贴纸风格靠粗白描边和夸张表情，背景一律不要。",
+    "ratio": "1:1 方形 512",
+    "source": "builtin"
+  },
+  {
+    "id": "character-chibi",
+    "category": "Character",
+    "title": "Q 版小人",
+    "template": "Create a chibi character illustration of {{subject}}. Two-head-tall proportions, oversized head, tiny limbs, clean flat shading, one soft shadow under the feet, plain background.",
+    "note": "Q 版必须写死头身比，不然比例会崩。",
+    "ratio": "1:1 方形 512",
+    "source": "builtin"
+  },
+  {
+    "id": "character-robot-helper",
+    "category": "Character",
+    "title": "机器人助手",
+    "template": "Illustrate a friendly helper robot character themed around {{subject}}. Rounded chassis, single glowing visor, articulated arms, flat vector shading, front-facing pose, neutral background.",
+    "note": "机器人角色用圆角外壳加单一面罩最容易出好图。",
+    "ratio": "1:1 方形",
+    "source": "builtin"
+  },
+  {
+    "id": "character-portrait-bust",
+    "category": "Character",
+    "title": "风格化胸像",
+    "template": "Create a stylized vector bust portrait representing {{subject}}. Geometric facial planes, limited four-color palette, strong silhouette, no photographic texture, centered composition.",
+    "note": "风格化人像用几何切面替代写实细节，避免五官糊成一团。",
+    "ratio": "头像 400×400",
+    "source": "builtin"
+  },
+  {
+    "id": "pattern-geometric-seamless",
+    "category": "Pattern/Decorative",
+    "title": "无缝几何纹样",
+    "template": "Create a seamless repeating geometric pattern inspired by {{subject}}. Make the edges match exactly when tiled, use three flat colors, keep shapes evenly spaced, and fill the whole canvas.",
+    "note": "无缝纹样必须强调边缘对齐，否则拼接会露缝。",
+    "ratio": "1:1 方形 512",
+    "source": "builtin"
+  },
+  {
+    "id": "pattern-wave-divider",
+    "category": "Pattern/Decorative",
+    "title": "波浪分隔装饰",
+    "template": "Draw a decorative wave divider motif themed around {{subject}}. Repeat three smooth curves across a wide strip, single color on transparent background, consistent amplitude, no text.",
+    "note": "分隔装饰用于版面过渡，宽度比例要适配横幅。",
+    "ratio": "横幅 1584×396",
+    "source": "builtin"
+  },
+  {
+    "id": "pattern-mandala",
+    "category": "Pattern/Decorative",
+    "title": "对称曼陀罗",
+    "template": "Create a radially symmetric mandala ornament inspired by {{subject}}. Repeat one petal motif eight times around a center, use two stroke weights, monochrome line art, perfectly balanced composition.",
+    "note": "曼陀罗靠八重对称，提示词里给出重复次数很关键。",
+    "ratio": "1:1 方形",
+    "source": "builtin"
+  },
+  {
+    "id": "pattern-border-frame",
+    "category": "Pattern/Decorative",
+    "title": "装饰边框",
+    "template": "Design a decorative rectangular frame border themed around {{subject}}. Repeat a small corner ornament at all four corners, thin double rule along the edges, centered empty area inside, monochrome.",
+    "note": "边框要留出中心空白，方便后期放内容。",
+    "ratio": "A4 打印 1240×1754",
+    "source": "builtin"
+  },
+  {
+    "id": "pattern-dot-grid-bg",
+    "category": "Pattern/Decorative",
+    "title": "点阵背景",
+    "template": "Generate a subtle dot grid background texture related to {{subject}}. Evenly spaced small circles, low contrast two-tone palette, seamless at the edges, no focal element, flat vector.",
+    "note": "背景纹理要低对比，否则会抢正文的注意力。",
+    "ratio": "16:9 宽屏",
+    "source": "builtin"
+  }
+]

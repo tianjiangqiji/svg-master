@@ -1,0 +1,23 @@
+# 打包产物（build.bat 生成，不入库）
+dist/
+*.exe
+*.exe~
+
+# 运行时数据（配置、会话 SVG、模型库缓存）
+data/
+
+# 临时工作目录与测试产物
+.tmp/
+.smoke/
+.playwright-cli/
+output/
+
+# 历史备份（.backup-vNN / internal.bak 是手工快照，不入库）
+.backup-v*/
+internal.bak/
+.selfcheck/
+
+# 编辑器 / 系统杂项
+*.lock
+.DS_Store
+Thumbs.db

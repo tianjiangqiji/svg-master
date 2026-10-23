@@ -1,0 +1,9 @@
+# 不做任何换行转换：仓库内容与工作区字节一致。
+# 项目里 Go 源码是 LF、前端 app.js / style.css 是 CRLF，混用且各有历史，
+# 强行归一会在每次 checkout 时制造大范围 diff。
+* -text
+
+# 二进制文件明确标记（便于 diff / 统计）
+*.exe binary
+*.png binary
+*.gif binary
