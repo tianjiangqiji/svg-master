@@ -210,7 +210,14 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	if in.Protocol == "" {
 		in.Protocol = config.ProtoOpenAIChat
 	}
-	models, err := llm.FetchRemoteModels(in.Protocol, in.BaseURL, in.APIKey, llm.DefaultTransport())
+	var models []config.ModelEntry
+	var err error
+	cur := s.store.Settings()
+	if p := cur.FindProvider(in.ProviderID); p != nil && p.AuthMode == "chatgpt" {
+		models, err = s.codex.Models(r.Context(), p.ID)
+	} else {
+		models, err = llm.FetchRemoteModels(in.Protocol, in.BaseURL, in.APIKey, llm.DefaultTransport())
+	}
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return

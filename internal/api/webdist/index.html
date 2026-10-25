@@ -96,6 +96,11 @@
             <div class="sel-menu hidden"></div>
           </div>
         </div>
+        <div class="fld hidden" id="fastModeField">
+          <label class="chk"><input type="checkbox" id="fastMode" aria-describedby="fastModeHint" /><span>Fast 加速</span></label>
+          <small class="muted" id="fastModeHint">加快同一模型的输出，可能增加订阅额度或 API 费用消耗。是否生效以本轮结果为准。</small>
+          <small id="fastModeStatus" role="status" aria-live="polite"></small>
+        </div>
         <div class="fld"><span>图片输入（可选）</span>
           <div class="drop" id="drop">
             <b>拖拽 / 粘贴 / 点击选择</b>
@@ -180,7 +185,7 @@
       </div>
     </section>
 
-    <!-- 右栏：四块都可折叠（点标题栏），Agent 默认折叠 -->
+    <!-- 右栏：各块都可折叠（点标题栏），Agent 默认折叠 -->
     <aside class="right" id="right">
       <div class="rblock usage" id="blkUsage">
         <div class="rhead" data-rblock="blkUsage" title="点击折叠 / 展开">
@@ -194,6 +199,29 @@
           <div class="kv"><span>TPS</span><b class="mono" id="usageTps">0.0</b></div>
           <div class="kv"><span>tokens</span><b class="mono" id="usageTokens">0</b></div>
           <div class="kv"><span>模型轮 / 工具</span><b class="mono" id="usageSteps">0 / 0</b></div>
+        </div>
+      </div>
+
+      <div class="rblock quota hidden" id="blkQuota">
+        <div class="rhead" data-rblock="blkQuota" title="点击折叠 / 展开">
+          <i class="rchev">▾</i><span>订阅额度</span>
+          <span class="spacer"></span><b id="quotaPlan">ChatGPT</b>
+        </div>
+        <div class="rbody">
+          <div id="quotaDetails" class="hidden">
+            <div class="kv"><span id="quotaPeriod">额度剩余</span><b id="quotaRemaining">—</b></div>
+            <div class="meter" id="quotaMeter" role="progressbar" aria-label="订阅剩余额度" aria-valuemin="0" aria-valuemax="100"><i id="quotaBar"></i></div>
+            <div class="kv quota-reset"><span>重置时间</span><b id="quotaReset">—</b></div>
+          </div>
+          <p class="quota-message" id="quotaMessage" role="status" aria-live="polite">正在读取额度…</p>
+          <div class="quota-actions">
+            <button class="mini" id="btnQuotaLogin" type="button">登录 Codex</button>
+            <button class="mini hidden" id="btnQuotaCancel" type="button">取消登录</button>
+            <button class="mini hidden" id="btnQuotaRefresh" type="button">刷新</button>
+            <button class="mini hidden" id="btnQuotaLogout" type="button">退出账号</button>
+            <button class="mini" id="btnQuotaUsage" type="button">管理额度</button>
+          </div>
+          <small class="muted quota-note" id="quotaNote">生成与额度共用 Codex 登录</small>
         </div>
       </div>
 
@@ -280,6 +308,18 @@
       </div>
       <div class="prov-form" id="provForm">
         <label class="fld"><span>名称</span><input id="pfName" spellcheck="false" /></label>
+		<label class="fld"><span>连接方式</span><select id="pfAuthMode"><option value="">API Key</option><option value="chatgpt">ChatGPT 订阅（Codex）</option></select></label>
+		<div id="chatgptAccount" class="fld" hidden>
+		  <span>Codex 账号</span>
+		  <p class="muted" id="chatgptStatus" role="status" aria-live="polite">尚未登录</p>
+		  <p class="muted tiny">登录一次即可生成 SVG 并查看额度。需要安装官方 Codex CLI；每个供应商可连接一个账号或工作区。</p>
+		  <div class="input-row chatgpt-actions">
+		    <button class="btn" id="btnChatGPTLogin" type="button">登录 Codex</button>
+		    <button class="btn" id="btnChatGPTCancel" type="button" hidden>取消登录</button>
+		    <button class="btn" id="btnChatGPTUsage" type="button">管理额度</button>
+		    <button class="btn" id="btnChatGPTLogout" type="button" hidden>退出账号</button>
+		  </div>
+		</div>
         <div class="fld"><span>协议</span><div class="proto-grid" id="pfProto"></div></div>
         <label class="chk"><input type="checkbox" id="pfExtended" /><span>扩展思考（增加 xhigh 极致 / max 最大 两档）</span></label>
         <label class="fld"><span>Base URL <span class="muted tiny">（/v1 可省略，末尾斜杠自动处理）</span></span><input id="pfBase" class="mono" spellcheck="false" placeholder="https://api.openai.com 或 https://api.openai.com/v1" /></label>

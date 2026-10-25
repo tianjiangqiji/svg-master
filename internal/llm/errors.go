@@ -19,6 +19,9 @@ func Retryable(err error) bool {
 
 func noRetry(err error) error { return &noRetryError{err} }
 
+// NoRetry prevents replaying a stateful request whose execution is owned by another client.
+func NoRetry(err error) error { return noRetry(err) }
+
 func errorEvents(err error) []StreamEvent {
 	return []StreamEvent{{Kind: EvError, Err: err.Error(), Cause: err}}
 }

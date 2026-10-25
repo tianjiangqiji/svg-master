@@ -9,10 +9,11 @@ import (
 )
 
 type respResponseIn struct {
-	Status string            `json:"status"`
-	Output []json.RawMessage `json:"output"`
-	Usage  *respUsageIn      `json:"usage"`
-	Error  *struct {
+	ServiceTier string            `json:"service_tier"`
+	Status      string            `json:"status"`
+	Output      []json.RawMessage `json:"output"`
+	Usage       *respUsageIn      `json:"usage"`
+	Error       *struct {
 		Message string `json:"message"`
 		Code    string `json:"code"`
 	} `json:"error"`
@@ -30,6 +31,9 @@ func (r *respResponseIn) checkStatus(kind string) error {
 		code := ""
 		if r.Error != nil {
 			code = r.Error.Code
+		}
+		if code == "subscription_sharing_usage_limit_exceeded" || code == "subscription_sharing_usage_unavailable" {
+			return noRetry(fmt.Errorf("ChatGPT 订阅额度已用完或当前不可用，请打开「管理供应商 → 管理额度」查看；不会自动切换到 API 付费"))
 		}
 		return remoteError("openai-responses", code, msg)
 	}

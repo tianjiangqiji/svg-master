@@ -1,8 +1,13 @@
 # SVG Master · SVG 生成器
 
-本地 SVG 生成工作台：Go 后端 + 原生 HTML 前端，单 exe 绿色运行。四协议直连、内置模型选择器、Agent 工具循环、ACP 上下文压缩、图转 SVG、实时渲染、比例预设、内置提示词库。
+本地 SVG 生成工作台：Go 后端 + 原生 HTML 前端，Windows 主程序为单个 exe。支持四种 API 协议、ChatGPT 订阅接入、Agent 工具循环、图转 SVG、多图层编辑、动图预览与 GIF 导出。
 
 模仿「鹈鹕 SVG 检测器（Pelican SVG Tester）」的形态，但做成真正能用的生成器。
+
+| 连接方式 | 如何连接 | 额外依赖 |
+|---|---|---|
+| API Key | 配置供应商的协议、Base URL 和 API Key | 无需 Codex CLI |
+| ChatGPT 订阅（Codex） | 在应用内登录一次，生成、模型列表与额度查询共用同一账号 | 官方 Codex CLI |
 
 ---
 
@@ -24,7 +29,7 @@ dist\svg-master\
 └─ README.md
 ```
 
-双击 `svg-master.exe` 即可。整个文件夹可任意拷走，无注册表、无安装。
+双击 `svg-master.exe` 即可。主程序和 `data` 文件夹可一起迁移；Codex 登录凭据由系统凭据管理器保存，迁移后可能需要重新登录。
 
 ### 方式二：源码运行
 
@@ -38,9 +43,90 @@ go run . -debug          :: WebView2 调试模式
 
 ### 依赖
 
-- Go 1.21+（构建时）
+- Go 1.27+（构建时，以 `go.mod` 为准）
 - Microsoft Edge WebView2 运行时（运行 Windows 窗口时；Win10/11 一般已内置，缺失时自动降级为系统浏览器）
 - 纯 Go 依赖，`CGO_ENABLED=0` 可交叉编译
+- 官方 Codex CLI（仅 ChatGPT 订阅模式需要，当前验证版本为 **0.162.1**）
+
+## ChatGPT 订阅接入
+
+### 安装与首次登录
+
+按[官方 Codex CLI 安装说明](https://learn.chatgpt.com/docs/codex/cli)安装 CLI。安装完成后，在新终端中确认命令可用：
+
+```powershell
+codex --version
+```
+
+重新打开 SVG Master，让程序读取更新后的 PATH，然后完成以下步骤：
+
+1. 打开「管理供应商」，点击「新建」并填写名称。
+2. 将「连接方式」设为 **ChatGPT 订阅（Codex）**。
+3. 点击「登录 Codex」。程序会保存此供应商，并打开系统浏览器。
+4. 在官方页面完成账号授权，返回应用等待显示「已登录 Codex」。无需填写 API Key。
+5. 登录成功后会自动获取模型列表，也可点击「获取模型列表」，然后保存。
+6. 从顶部模型选择器选中该供应商和模型，输入提示词并开始生成。
+
+**同一供应商只需登录一次。** 生成 SVG、获取模型列表和显示额度使用同一 Codex 账号。可用模型以该账号返回的列表为准。
+
+SVG Master 为每个供应商维护独立的登录，不自动使用其他 Codex 终端或桌面应用的账号。取消登录会结束当前授权流程；退出账号会同时断开该供应商的生成和额度查询，不影响其他供应商。
+
+### 订阅额度
+
+选择订阅供应商后，右侧「上下文用量」下方显示「订阅额度」。API Key 供应商不显示此面板。
+
+| 账号类型 | 显示周期 | 显示内容 |
+|---|---|---|
+| Plus | **5h** | 剩余百分比、进度条、重置时间 |
+| Pro，包括服务端返回的 `prolite`、`pro_*` 类型 | **7day** | 剩余百分比、进度条、重置时间 |
+| 其他类型或缺少对应周期 | 显示状态说明 | 不推算额度，不把缺失数据当作 0% |
+
+额度来自当前登录账号的 Codex 用量接口。剩余百分比为 `100 − 已用百分比`，重置时间按本机时区显示。页面可见时每分钟刷新，并在生成结束、返回页面时刷新；也可手动点击「刷新」。「管理额度」会打开 ChatGPT 用量设置页。
+
+这里选择展示一个周期，并不表示账号只受这一项额度约束；实际可用额度和限制以服务端为准。额度耗尽不会自动改用 API Key 计费。
+
+### Fast 加速
+
+左侧 **Fast 加速** 默认关闭，开启状态会保存。此开关适用于 ChatGPT 订阅模式和 OpenAI Responses 协议，与「快速 / 多图层 / 动图」生成方式及思考等级分别设置。
+
+| 连接方式 | 开启后发送的设置 |
+|---|---|
+| ChatGPT 订阅（Codex） | app-server 的 `serviceTier: "priority"` |
+| OpenAI Responses（API Key） | Responses 请求的 `service_tier: "priority"` |
+
+界面与日志根据服务端反馈显示结果：
+
+- 返回 `priority` 或 `fast`：本轮已使用 Fast 加速。
+- 返回 `default`：已请求 Fast，本轮按标准档位处理。
+- 未返回档位：已请求 Fast，服务端未确认加速档位。
+
+目前 Codex 适配能够提交 Fast 设置，但没有取得实际服务档位的确认，因此按第三种状态显示。开启开关不等于加速已经生效；额度或费用消耗取决于服务端执行结果。
+
+### 网络与代理
+
+程序不会写入或修改系统代理配置。HTTP 客户端优先采用 `HTTP_PROXY` / `HTTPS_PROXY` 环境变量；未配置这两个变量时，在 Windows 上读取已启用的系统手动代理，并处理 `NO_PROXY` 与系统绕过列表。仅设置 `NO_PROXY` 不会关闭系统代理回退。Codex 子进程会继承选定的代理及环境变量，不包含固定代理地址或端口。
+
+当前不解析 PAC 自动代理脚本。调整代理或 PATH 后，请重启 SVG Master，以便已启动的 Codex 子进程使用新设置。
+
+### 常见问题
+
+| 现象 | 处理方式 |
+|---|---|
+| 提示需要安装 Codex CLI | 在新终端运行 `codex --version`，确认 CLI 已加入 PATH，再重启 SVG Master。 |
+| 已在 Codex 终端登录，应用仍显示未登录 | 在 SVG Master 中为该供应商登录一次；两者使用独立的账号存储。 |
+| 已登录但没有模型，或原模型不可用 | 点击「获取模型列表」，保存并重新选择当前账号可用的模型。 |
+| 额度显示「服务端暂未返回」 | 点击刷新；只在服务端提供对应周期和有效用量时显示百分比。 |
+| 授权或生成遇到超时、HTTP 403 | 检查程序所用的网络出口、代理环境变量和 Windows 系统代理。更换配置后重启应用；代理启用本身不保证服务端接受请求。 |
+
+登录回调指向 `127.0.0.1` 是本机接收授权结果的正常方式。回调地址直连不会使发往 OpenAI 的请求自动绕过代理，两类连接应分别检查。
+
+### 兼容范围
+
+- 已在 Windows 和 Codex CLI **0.162.1** 上验证；尚未完成 macOS、Linux 的端到端验证。
+- 接入启用了 app-server 实验能力，使用动态工具与历史注入。CLI 升级后需重新验证兼容性，相关协议见[官方 app-server 文档](https://learn.chatgpt.com/docs/app-server)。
+- 订阅模式使用流式输出，「非流式兜底」仅适用于原有 API Key 协议。
+- 单次生成内的推理上下文由 Codex 管理，SVG Master 保存可见对话及工具结果供下一次请求续接。原有 ACP 投影不会在每次工具调用后替换正在运行的 Codex 上下文。
+- 绘图、图层和校验仍由 SVG Master 的工具执行；接入配置禁用 Codex 终端、网页搜索和子代理工具。
 
 ---
 
@@ -50,7 +136,7 @@ go run . -debug          :: WebView2 调试模式
 
 左栏只有「生成」组：**生成方式三级开关**（快速 / 多图层 / 动图）、提示词、比例预设、思考等级、图片输入（可选）、**开始生成 / 停止生成** 单按钮（运行中同一按钮变「停止生成」），旁边是 **代码** 按钮用于在画布与代码视图之间切换；底部是「管理供应商」与「提示词库」。**连接信息不在主界面出现**，URL / Key / 协议全部只在供应商弹窗里维护。
 
-右栏从上到下三块：上下文用量（used/max、压缩块、TPS、tokens、模型轮/工具）→ AGENT 参数（最大步数、自动校验、上下文压缩、非流式兜底、压缩阈值）→ **原始输出**（正文 / 思考 / 错误三段切换，底部显示 `正文 N 字 · 思考 N 字`，可单独清空当前段）。
+右栏包括上下文用量（used/max、压缩块、TPS、tokens、模型轮/工具）、图层、AGENT 参数及**原始输出**。订阅模式会在上下文用量下方额外显示额度面板。原始输出分为正文 / 思考 / 错误，支持单独清空。
 
 - **日志流只显示摘要**：`TEXT` / `THINK` 连续事件合并进同一行，正文与思维链截到 90 字 + `…`，行尾标 `· N 字`；**全文一律去右栏「原始输出」看**，日志流不再被流式碎片刷屏。
 - **代码视图**：点「代码」把画布换成源码面板——按标签自动换行与缩进、行号、`▾` 折叠（点父标签可整段收起，工具栏有「全部折叠 / 全部展开」）、「自动换行」、「复制代码」，底部同样带校验问题条。快捷键 `Ctrl + \``。
@@ -64,7 +150,7 @@ go run . -debug          :: WebView2 调试模式
 
 ---
 
-## 四种协议
+## API Key 模式的四种协议
 
 | 协议 | 端点 | 鉴权头 |
 |---|---|---|
@@ -78,7 +164,7 @@ go run . -debug          :: WebView2 调试模式
 
 ## 模型选择器
 
-- 「获取模型列表」按协议拉取远端模型（OpenAI 系 `GET /models`、Anthropic `GET /v1/models`、Gemini `GET /v1beta/models`），失败不影响手填。
+- 「获取模型列表」在 API Key 模式下按协议拉取远端模型（OpenAI 系 `GET /models`、Anthropic `GET /v1/models`、Gemini `GET /v1beta/models`）；订阅模式使用当前 Codex 账号的模型列表。失败不影响手填，但手填模型也必须是账号实际可用的模型。
 - 每个模型 id 自动推断能力：`contextWindow` / `maxTokens` / `reasoning` / `vision`（有序前缀规则，覆盖 gemini / claude / gpt / o 系 / deepseek / kimi / qwen / glm / grok / mistral / llama 等）。
 - 能力值可在供应商面板里逐模型覆盖，覆盖优先于推断。
 - 多供应商并存，可随时切换；API Key 落盘做本机混淆（`enc:` 前缀），界面回显打码。
@@ -88,8 +174,8 @@ go run . -debug          :: WebView2 调试模式
 - 多步工具循环：`emit_svg` / `validate_svg` / `compress` / `decompress` / `search_context` / `acp_status` / `ask_user`。会改写 SVG 或注入风格偏好的工具（`apply_canvas` / `list_prompts` / `search_prompts`）已按需求移除。
 - 熔断与重试：流式重试 3 次、空回复重试 2 次、步数上限可配（默认 40）、同错重复 3 次熔断、5 分钟无事件 watchdog。
 - **自动校验**：开启后 `emit_svg` 若校验出 error 级问题，会把问题清单作为工具错误回灌给模型，逼它继续修而不是带着错误收工。
-- **非流式兜底**：部分网关不支持 SSE，勾选后改走一次性 JSON 响应，四协议均已实现完整响应解码，事件序列不变。
-- **ACP 上下文压缩**：消息按 `mNNNNN` 编号，模型通过 `compress` 工具写 T1/T2/T3 三层摘要块；投影只折叠「发送视图」，原始历史完整保留，`decompress` 天然可逆；用量到阈值（默认 75%）自动 nudge；`contextWindow < 16000` 时退化为仅提示。
+- **非流式兜底**：API Key 模式下，部分网关不支持 SSE，勾选后改走一次性 JSON 响应，四协议均已实现完整响应解码，事件序列不变。
+- **ACP 上下文压缩**：消息按 `mNNNNN` 编号，模型通过 `compress` 工具写 T1/T2/T3 三层摘要块；API Key 模式中投影折叠「发送视图」，原始历史完整保留，`decompress` 天然可逆；用量到阈值（默认 75%）自动 nudge；`contextWindow < 16000` 时退化为仅提示。Codex 模式的上下文行为见上方「兼容范围」。
 
 ## 生成方式（三级开关）
 
@@ -139,6 +225,8 @@ svg-master/
 │  ├─ app/                     进程装配、WebView2 窗口 / 浏览器降级
 │  ├─ config/                  Settings 模型、落盘、密钥混淆
 │  ├─ llm/                     四协议流式客户端、模型列表、能力推断
+│  ├─ codex/                   Codex 进程、账号登录、模型生成与额度查询
+│  ├─ netproxy/                环境变量与 Windows 系统代理适配
 │  ├─ agent/                   Agent 循环、工具、系统提示词、ACP 压缩
 │  ├─ svg/                     提取 / 只读校验 / 画布尺寸规范 / 提示词库（不改写 SVG）
 │  └─ api/                     HTTP + SSE 服务、go:embed 前端资源
@@ -147,11 +235,62 @@ svg-master/
 └─ dist/svg-master/            打包产物
 ```
 
+## Codex 接入实现
+
+`internal/codex` 通过标准输入输出与官方 app-server 通信，提供符合现有 `llm.Client` 接口的适配器。账号授权和凭据刷新交给 CLI；SVG Master 接收模型事件并执行原有绘图工具。
+
+| 操作 | 使用的 app-server 方法 |
+|---|---|
+| 登录、取消、退出、状态 | `account/login/start`、`account/login/cancel`、`account/logout`、`account/read` |
+| 订阅额度 | `account/rateLimits/read` |
+| 模型列表 | `model/list` |
+| 开始生成与载入已有历史 | `thread/start`、`thread/inject_items`、`turn/start` |
+| 绘图工具调用及结果回传 | `item/tool/call` 请求与对应响应 |
+| 停止与释放订阅 | `turn/interrupt`、`thread/unsubscribe` |
+
+每次用户发起生成时创建临时 Codex 线程，载入工程中保存的历史。工具调用交回 SVG Master 执行，将校验或执行结果返回同一 Codex 轮次，直到完成或用户停止。对已经发起的有状态请求，不使用普通 HTTP 流的自动重放重试。
+
+供应商使用 `authMode: "chatgpt"` 选择 Codex；为空时沿用 API Key 模式。`fastMode` 是默认关闭的全局设置。旧设置未包含这两个字段时继续按原有方式工作。
+
+每个供应商的 Codex 数据目录位于 `data/codex-quota/<供应商 ID 的 SHA-256>/`，作为该子进程的独立 `CODEX_HOME`。目录名称保持稳定，以便复用已创建的系统凭据条目；它同时服务于生成与额度查询。凭据由 CLI 的 `keyring` 存储管理，不写入供应商的 API Key 字段。迁移目录或更换系统用户时可能需要重新授权。
+
+## 验证
+
+在仓库根目录运行以下检查；Go 测试使用模拟服务或本地辅助进程，不需要登录真实账号：
+
+```powershell
+go test ./...
+node --check internal/api/webdist/app.js
+git diff --check
+```
+
+Node.js 仅用于 JavaScript 语法检查，不是主程序运行依赖。
+
+| 验证项 | 覆盖内容 |
+|---|---|
+| Codex 连接测试 | 工具调用与错误结果回传、历史注入、用量累计、停止与取消订阅、结束后的请求禁止重放 |
+| 账号与额度测试 | 供应商账号隔离、退出状态、Plus 5h、Pro / prolite / pro_* 7day、周期顺序变化、缺失及无效用量 |
+| Fast 测试 | 默认关闭、设置持久化、单次请求覆盖、参数透传、按返回值显示实际档位 |
+| 代理测试 | 环境代理优先、系统代理回退、仅有 NO_PROXY 时的处理、本机地址和绕过规则 |
+
+Windows 本地联调已验证一次 Codex 登录后获取模型、生成蓝色圆形、在后续请求中改成绿色，并查询同一账号的 7day 额度。浏览器联调覆盖登录与退出、额度面板、浅色 / 深色主题、Fast 状态及 API Key 模式；这些浏览器检查使用本地辅助脚本，未作为仓库内自动化测试发布。Plus 5h 的显示已通过模拟测试，尚未用真实 Plus 账号验证。
+
 ## HTTP 接口
 
 全部需带令牌（URL `?k=` 或头 `X-App-Token`），`Origin` 仅允许 `http://127.0.0.1` / `http://localhost`。
 
 `GET /api/state`、`PUT /api/settings`、`GET|POST|DELETE /api/providers`、`GET /api/protocols`、`GET /api/prompts`、`GET|POST /api/canvas`、`POST /api/models`、`POST /api/validate`、`POST /api/export`、`POST /api/chat`（SSE）、`POST /api/chat/abort`、`POST /api/render-result`。
+
+订阅模式新增以下接口，均需带已保存供应商的 `providerId` 查询参数，并遵循相同的本地令牌校验：
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| GET | `/api/chatgpt/status` | 当前 Codex 登录状态 |
+| GET | `/api/chatgpt/quota` | 当前账号的订阅额度 |
+| POST | `/api/chatgpt/login` | 发起官方登录并打开浏览器 |
+| POST | `/api/chatgpt/cancel` | 取消尚未完成的登录 |
+| POST | `/api/chatgpt/logout` | 退出当前供应商账号 |
+| POST | `/api/chatgpt/usage` | 打开 ChatGPT 用量设置页 |
 
 详见 [INTERFACES.md](INTERFACES.md)。
 

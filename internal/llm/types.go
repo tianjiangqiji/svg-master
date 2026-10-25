@@ -108,15 +108,16 @@ type Usage struct {
 
 // StreamEventKind 流事件类型。
 const (
-	EvText      = "text"
-	EvThinking  = "thinking"
-	EvToolStart = "tool_start"
-	EvToolDelta = "tool_delta"
-	EvUsage     = "usage"
-	EvDone      = "done"
-	EvError     = "error"
-	EvOutput    = "output"   // 不透明原生输出，仅供历史续传，不向 UI 展开
-	EvContinue  = "continue" // 服务端暂停，携带原生输出继续下一轮
+	EvText        = "text"
+	EvThinking    = "thinking"
+	EvToolStart   = "tool_start"
+	EvToolDelta   = "tool_delta"
+	EvUsage       = "usage"
+	EvServiceTier = "service_tier"
+	EvDone        = "done"
+	EvError       = "error"
+	EvOutput      = "output"   // 不透明原生输出，仅供历史续传，不向 UI 展开
+	EvContinue    = "continue" // 服务端暂停，携带原生输出继续下一轮
 )
 
 // StreamEvent 流式事件。
@@ -135,13 +136,14 @@ type StreamEvent struct {
 
 // Request 一次模型请求（已与协议无关）。
 type Request struct {
-	System    string
-	Messages  []Message
-	Tools     []ToolSpec
-	Model     string
-	MaxTokens int
-	Thinking  string // off|low|medium|high|xhigh|max
-	Stream    bool
+	System      string
+	Messages    []Message
+	Tools       []ToolSpec
+	Model       string
+	MaxTokens   int
+	Thinking    string // off|low|medium|high|xhigh|max
+	ServiceTier string // "priority" requests Fast; empty preserves the provider default.
+	Stream      bool
 	// SessionID 用于网关前缀缓存亲和（session_id / x-client-request-id / x-session-affinity）
 	SessionID string
 }

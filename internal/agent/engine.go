@@ -305,14 +305,15 @@ func (e *Engine) run(ctx context.Context, t Task) (Stats, error) {
 		st.mu.Unlock()
 
 		req := llm.Request{
-			System:    system,
-			Messages:  projected,
-			Tools:     specs,
-			Model:     model,
-			MaxTokens: e.deps.MaxTokens,
-			Thinking:  e.deps.Thinking,
-			Stream:    !e.deps.Settings.StreamDisabled,
-			SessionID: t.Session,
+			System:      system,
+			Messages:    projected,
+			Tools:       specs,
+			Model:       model,
+			MaxTokens:   e.deps.MaxTokens,
+			Thinking:    e.deps.Thinking,
+			ServiceTier: e.deps.ServiceTier,
+			Stream:      !e.deps.Settings.StreamDisabled,
+			SessionID:   t.Session,
 		}
 
 		res, err := e.streamOnce(runCtx, req)

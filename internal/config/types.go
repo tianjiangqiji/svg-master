@@ -170,6 +170,7 @@ type ModelEntry struct {
 
 // Provider 一个供应商（协议 + 地址 + 密钥 + 模型清单）。
 type Provider struct {
+	AuthMode  string                 `json:"authMode,omitempty"` // chatgpt uses the provider's Codex login for generation and quota.
 	ID        string                 `json:"id"`
 	Name      string                 `json:"name"`
 	Protocol  string                 `json:"protocol"`
@@ -239,6 +240,7 @@ type Settings struct {
 	ActiveProviderID string          `json:"activeProviderId"`
 	ActiveModel      string          `json:"activeModel"`
 	Thinking         string          `json:"thinking"`
+	FastMode         bool            `json:"fastMode"`         // Request Fast processing for OpenAI Responses; defaults to off.
 	ExtendedThinking bool            `json:"extendedThinking"` // 解锁 xhigh / max 两档
 	Agent            AgentSettings   `json:"agent"`
 	Layers           LayerSettings   `json:"layers"`
@@ -288,6 +290,7 @@ type SettingsPatch struct {
 	ActiveProviderID *string          `json:"activeProviderId,omitempty"`
 	ActiveModel      *string          `json:"activeModel,omitempty"`
 	Thinking         *string          `json:"thinking,omitempty"`
+	FastMode         *bool            `json:"fastMode,omitempty"`
 	ExtendedThinking *bool            `json:"extendedThinking,omitempty"`
 	Agent            *AgentSettings   `json:"agent,omitempty"`
 	Layers           *LayerSettings   `json:"layers,omitempty"`
@@ -314,6 +317,9 @@ func (p SettingsPatch) Apply(base Settings) Settings {
 	if p.Thinking != nil {
 		out.Thinking = *p.Thinking
 	}
+	if p.FastMode != nil {
+		out.FastMode = *p.FastMode
+	}
 	if p.ExtendedThinking != nil {
 		out.ExtendedThinking = *p.ExtendedThinking
 	}
@@ -338,7 +344,7 @@ func (p SettingsPatch) Apply(base Settings) Settings {
 // Empty 判断增量是否什么都没带（避免空请求也触发一次落盘）。
 func (p SettingsPatch) Empty() bool {
 	return p.Version == nil && p.Providers == nil && p.ActiveProviderID == nil &&
-		p.ActiveModel == nil && p.Thinking == nil && p.ExtendedThinking == nil && p.Agent == nil &&
+		p.ActiveModel == nil && p.Thinking == nil && p.FastMode == nil && p.ExtendedThinking == nil && p.Agent == nil &&
 		p.Layers == nil && p.Project == nil && p.Canvas == nil && p.Export == nil
 }
 

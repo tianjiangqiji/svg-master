@@ -47,6 +47,7 @@ type respToolOut struct {
 }
 
 type respRequestOut struct {
+	ServiceTier     string            `json:"service_tier,omitempty"`
 	Model           string            `json:"model"`
 	Instructions    string            `json:"instructions,omitempty"`
 	Input           []json.RawMessage `json:"input"`
@@ -64,6 +65,7 @@ type respRequestOut struct {
 
 func (c *openaiResponses) buildBody(req Request) ([]byte, error) {
 	out := respRequestOut{
+		ServiceTier:    req.ServiceTier,
 		Model:          req.Model,
 		Instructions:   req.System,
 		Stream:         req.Stream,
@@ -361,6 +363,7 @@ func (c *openaiResponses) handleFrame(p *pump, ev sseEvent, st *respState) (bool
 		if err := in.Response.checkStatus(kind); err != nil {
 			return false, err
 		}
+		p.send(StreamEvent{Kind: EvServiceTier, Text: in.Response.ServiceTier})
 		if in.Response.Output != nil {
 			st.items = in.Response.Output
 		}

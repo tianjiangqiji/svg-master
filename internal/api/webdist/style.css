@@ -1,5 +1,11 @@
 /* SVG Master · 紧凑工具风（深/浅双主题，无外部依赖） */
 
+.chatgpt-hidden, #chatgptAccount[hidden], .chatgpt-actions [hidden] { display:none !important; }
+.chatgpt-actions { flex-wrap:wrap; gap:8px; }
+.chatgpt-actions .btn { min-height:44px; }
+#chatgptStatus { margin:0; overflow-wrap:anywhere; }
+#fastModeStatus:not(:empty) { display:block; margin-top:4px; }
+
 /* ── 主题变量 ───────────────────────────────────────── */
 :root,
 html[data-theme="dark"]{
@@ -594,6 +600,14 @@ input[type=checkbox]{accent-color:var(--accent);width:13px;height:13px;margin:0;
 .kv{display:flex;justify-content:space-between;gap:8px;font-size:11px;color:var(--muted);padding:2px 0;flex:0 0 auto}
 .kv > span:first-child{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .kv b{flex:0 0 auto;color:var(--text2);font-family:var(--mono);font-weight:500;white-space:nowrap}
+.quota .rbody{gap:6px}
+.quota .kv{font-size:12px}
+.quota .meter{margin:4px 0 6px}
+.quota-message{font-size:12px;line-height:1.5;margin:0;color:var(--muted);overflow-wrap:anywhere}
+.quota-message:empty{display:none}
+.quota-actions{display:flex;gap:6px;flex-wrap:wrap}
+.quota-actions .mini{min-height:28px;padding:4px 8px}
+.quota-note{font-size:11px;line-height:1.5}
 .agent-body{padding-top:2px}
 .agent-body .fld:last-child{margin-bottom:0}
 
