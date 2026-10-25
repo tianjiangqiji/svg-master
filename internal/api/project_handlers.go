@@ -108,9 +108,9 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 // handleProjectOpen 打开工程。
 func (s *Server) handleProjectOpen(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Mode string `json:"mode"` // quick | project
-		Dir  string `json:"dir"`  // 工程模式下的工程文件夹
-		Fresh bool  `json:"fresh"` // 快速模式：是否清空旧内容（默认清）
+		Mode  string `json:"mode"`  // quick | project
+		Dir   string `json:"dir"`   // 工程模式下的工程文件夹
+		Fresh bool   `json:"fresh"` // 快速模式：是否清空旧内容（默认清）
 	}
 	if err := readJSON(r, &in); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -247,8 +247,8 @@ func (s *Server) handleProjectSave(w http.ResponseWriter, r *http.Request) {
 
 // handleProjectClose 关闭工程；快速模式下可选择是否保留。
 //
-// 带 keep=true 时视为「退出询问」的回执：保留内容（另存为工程），
-// 其余情况按 purgeQuick 处理。
+// 带 keep=true 时只表示「保留内容、不要清理临时目录」（关窗询问里选另存后，
+// 前端会先 saveas 再走到这里），其余情况按 purgeQuick 处理。
 func (s *Server) handleProjectClose(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		PurgeQuick bool `json:"purgeQuick"`
@@ -256,27 +256,8 @@ func (s *Server) handleProjectClose(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = readJSON(r, &in)
 	if in.Keep {
-		s.proj.mu.Lock()
-		ch := s.proj.saveWaiter
-		s.proj.mu.Unlock()
-		if ch != nil {
-			select {
-			case ch <- true:
-			default:
-			}
-		}
 		writeJSON(w, map[string]any{"ok": true})
 		return
-	}
-	// 丢弃：若存在等待中的询问，先回执 false。
-	s.proj.mu.Lock()
-	ch := s.proj.saveWaiter
-	s.proj.mu.Unlock()
-	if ch != nil {
-		select {
-		case ch <- false:
-		default:
-		}
 	}
 	if err := s.closeProject(in.PurgeQuick); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -293,16 +274,16 @@ func (s *Server) handleLayers(w http.ResponseWriter, r *http.Request) {
 // handleLayerOps 图层人工操作。
 func (s *Server) handleLayerOps(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Op       string   `json:"op"` // add|delete|duplicate|rename|visible|locked|opacity|blend|index|active|reorder
-		ID       string   `json:"id"`
-		Name     *string  `json:"name"`
-		Visible  *bool    `json:"visible"`
-		Locked   *bool    `json:"locked"`
-		Opacity  *float64 `json:"opacity"`
-		Blend    *string  `json:"blend"`
-		Index    *int     `json:"index"`
-		IDs      []string `json:"ids"`
-		Content  string   `json:"content"`
+		Op      string   `json:"op"` // add|delete|duplicate|rename|visible|locked|opacity|blend|index|active|reorder
+		ID      string   `json:"id"`
+		Name    *string  `json:"name"`
+		Visible *bool    `json:"visible"`
+		Locked  *bool    `json:"locked"`
+		Opacity *float64 `json:"opacity"`
+		Blend   *string  `json:"blend"`
+		Index   *int     `json:"index"`
+		IDs     []string `json:"ids"`
+		Content string   `json:"content"`
 	}
 	if err := readJSON(r, &in); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -382,6 +383,14 @@ func decorateMessage(m llm.Message, ref string) llm.Message {
 // cloneMessage 深拷贝一条消息（Block 内含指针）。
 func cloneMessage(m llm.Message) llm.Message {
 	out := llm.Message{Role: m.Role, Blocks: make([]llm.Block, len(m.Blocks))}
+	if m.NativeOutput != nil {
+		native := *m.NativeOutput
+		native.Items = make([]json.RawMessage, len(m.NativeOutput.Items))
+		for i, raw := range m.NativeOutput.Items {
+			native.Items[i] = append(json.RawMessage(nil), raw...)
+		}
+		out.NativeOutput = &native
+	}
 	for i, b := range m.Blocks {
 		nb := b
 		if b.Image != nil {

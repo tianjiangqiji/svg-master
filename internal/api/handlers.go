@@ -28,7 +28,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		"defaultPrompt": svg.DefaultPrompt,
 		"version":       config.AppVersion,
 		"dataDir":       s.store.Dir(),
-		"project":      s.snapshot(),
+		"project":       s.snapshot(),
 		"warn":          errText(s.store.LastError()),
 	})
 }

@@ -49,7 +49,7 @@
         <i class="dot idle" id="badgeDot"></i><span id="modelBadgeText">未选择模型</span><i class="caret">▾</i>
       </button>
       <button class="btn icon" id="btnTheme" type="button" title="主题：跟随系统"></button>
-      <button class="btn" id="btnClear" type="button" title="清空对话上下文（图层与画布保留）">清空上下文</button>
+      <button class="btn" id="btnClear" type="button" title="清空画布、图层内容、对话、日志与图片">清空全部</button>
       <button class="btn" id="btnProject" type="button" title="切换 / 新建 / 保存工程">工程</button>
       <button class="btn" id="btnCopy" type="button">复制 SVG</button>
       <button class="btn primary" id="btnSave" type="button">保存 SVG</button>
@@ -180,66 +180,80 @@
       </div>
     </section>
 
-    <!-- 右栏 -->
+    <!-- 右栏：四块都可折叠（点标题栏），Agent 默认折叠 -->
     <aside class="right" id="right">
-      <div class="rblock usage">
-        <div class="rhead"><span>上下文用量</span><b id="usagePct">0%</b></div>
-        <div class="meter"><i id="usageBar"></i></div>
-        <div class="kv"><span>used / max</span><b class="mono" id="usageUsed">0 / 0</b></div>
-        <div class="kv"><span>压缩块</span><b class="mono" id="usageBlocks">0</b></div>
-        <div class="kv"><span>TPS</span><b class="mono" id="usageTps">0.0</b></div>
-        <div class="kv"><span>tokens</span><b class="mono" id="usageTokens">0</b></div>
-        <div class="kv"><span>模型轮 / 工具</span><b class="mono" id="usageSteps">0 / 0</b></div>
+      <div class="rblock usage" id="blkUsage">
+        <div class="rhead" data-rblock="blkUsage" title="点击折叠 / 展开">
+          <i class="rchev">▾</i><span>上下文用量</span>
+          <span class="spacer"></span><b id="usagePct">0%</b>
+        </div>
+        <div class="rbody">
+          <div class="meter"><i id="usageBar"></i></div>
+          <div class="kv"><span>used / max</span><b class="mono" id="usageUsed">0 / 0</b></div>
+          <div class="kv"><span>压缩块</span><b class="mono" id="usageBlocks">0</b></div>
+          <div class="kv"><span>TPS</span><b class="mono" id="usageTps">0.0</b></div>
+          <div class="kv"><span>tokens</span><b class="mono" id="usageTokens">0</b></div>
+          <div class="kv"><span>模型轮 / 工具</span><b class="mono" id="usageSteps">0 / 0</b></div>
+        </div>
       </div>
 
       <div class="rblock layers" id="layerBlock">
-        <div class="rhead">
-          <span>图层</span>
+        <div class="rhead" data-rblock="layerBlock" title="点击折叠 / 展开">
+          <i class="rchev">▾</i><span>图层</span>
           <span class="spacer"></span>
           <span class="muted tiny" id="layerMeta">—</span>
           <button class="mini" id="btnAddLayer" type="button" title="新建图层">＋</button>
         </div>
-        <div class="layer-list" id="layerList">
-          <div class="flow-empty">（没有图层）</div>
-        </div>
-        <div class="layer-foot">
-          <span class="muted tiny" id="layerActive">当前：—</span>
-          <span class="spacer"></span>
-          <button class="mini" id="btnLayerUp" type="button" title="上移一层">↑</button>
-          <button class="mini" id="btnLayerDown" type="button" title="下移一层">↓</button>
-          <button class="mini danger" id="btnLayerDel" type="button" title="删除当前图层">删</button>
-        </div>
-      </div>
-
-      <div class="rblock agent">
-        <div class="rhead"><span>Agent</span></div>
-        <div class="agent-body">
-          <label class="fld"><span>最大步数</span>
-            <input id="maxSteps" type="number" min="1" max="200" step="1" />
-          </label>
-          <label class="check"><input type="checkbox" id="autoValidate" /><span>自动校验</span></label>
-          <label class="check"><input type="checkbox" id="compressOn" /><span>上下文压缩</span></label>
-          <label class="check"><input type="checkbox" id="streamOff" /><span>非流式兜底</span></label>
-          <label class="fld"><span>压缩阈值 <b id="compressAtLabel">75%</b></span>
-            <input id="compressAt" type="range" min="50" max="95" step="1" />
-          </label>
+        <!-- 整体滚动：列表与底部按钮同属一个滚动区 -->
+        <div class="rbody">
+          <div class="layer-list" id="layerList">
+            <div class="flow-empty">（没有图层）</div>
+          </div>
+          <div class="layer-foot">
+            <span class="muted tiny" id="layerActive">当前：—</span>
+            <span class="spacer"></span>
+            <button class="mini" id="btnLayerUp" type="button" title="上移一层">↑</button>
+            <button class="mini" id="btnLayerDown" type="button" title="下移一层">↓</button>
+            <button class="mini danger" id="btnLayerDel" type="button" title="删除当前图层">删</button>
+          </div>
         </div>
       </div>
 
-      <!-- 模型输出：思维链与正文按到达顺序交替成流 -->
-      <div class="rblock raw">
-        <div class="rhead">
-          <span>模型输出</span>
+      <div class="rblock agent collapsed" id="blkAgent">
+        <div class="rhead" data-rblock="blkAgent" title="点击折叠 / 展开">
+          <i class="rchev">▸</i><span>Agent</span>
+        </div>
+        <div class="rbody">
+          <div class="agent-body">
+            <label class="fld"><span>最大步数</span>
+              <input id="maxSteps" type="number" min="1" max="200" step="1" />
+            </label>
+            <label class="check"><input type="checkbox" id="autoValidate" /><span>自动校验</span></label>
+            <label class="check"><input type="checkbox" id="compressOn" /><span>上下文压缩</span></label>
+            <label class="check"><input type="checkbox" id="streamOff" /><span>非流式兜底</span></label>
+            <label class="fld"><span>压缩阈值 <b id="compressAtLabel">75%</b></span>
+              <input id="compressAt" type="range" min="50" max="95" step="1" />
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- 模型输出：思维链与正文按到达顺序交替成流；整体滚动 -->
+      <div class="rblock raw" id="blkRaw">
+        <div class="rhead" data-rblock="blkRaw" title="点击折叠 / 展开">
+          <i class="rchev">▾</i><span>模型输出</span>
           <span class="spacer"></span>
           <span class="muted tiny" id="rawMeta">0 字</span>
         </div>
-        <div class="flow-body" id="flowBody">
-          <div class="flow-empty">（尚无输出）</div>
-        </div>
-        <div class="raw-foot">
-          <label class="check inline"><input type="checkbox" id="flowAuto" checked /><span>自动滚动</span></label>
-          <span class="spacer"></span>
-          <button class="mini" id="btnClearRaw" type="button">清空</button>
+        <div class="rbody">
+          <div class="flow-body" id="flowBody">
+            <div class="flow-empty">（尚无输出）</div>
+          </div>
+          <div class="raw-foot">
+            <label class="check inline"><input type="checkbox" id="flowAuto" checked /><span>自动滚动</span></label>
+            <span class="spacer"></span>
+            <button class="mini" id="btnClearRaw" type="button">清空</button>
+          </div>
         </div>
       </div>
     </aside>
@@ -268,7 +282,7 @@
         <label class="fld"><span>名称</span><input id="pfName" spellcheck="false" /></label>
         <div class="fld"><span>协议</span><div class="proto-grid" id="pfProto"></div></div>
         <label class="chk"><input type="checkbox" id="pfExtended" /><span>扩展思考（增加 xhigh 极致 / max 最大 两档）</span></label>
-        <label class="fld"><span>Base URL</span><input id="pfBase" class="mono" spellcheck="false" /></label>
+        <label class="fld"><span>Base URL <span class="muted tiny">（/v1 可省略，末尾斜杠自动处理）</span></span><input id="pfBase" class="mono" spellcheck="false" placeholder="https://api.openai.com 或 https://api.openai.com/v1" /></label>
         <label class="fld"><span>API Key</span>
           <span class="input-row">
             <input id="pfKey" type="password" class="mono" spellcheck="false" autocomplete="off" />
@@ -279,6 +293,7 @@
           <div class="model-add">
             <input id="pfModelInput" class="mono" spellcheck="false" placeholder="model id" />
             <button class="mini" id="btnAddModel" type="button">添加</button>
+            <button class="mini" id="btnClearModels" type="button" title="清空当前供应商的全部备选模型">清空</button>
             <button class="mini" id="btnFetchProv" type="button">获取模型列表</button>
           </div>
           <div class="model-list mono" id="pfModels"></div>

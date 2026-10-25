@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	webview "github.com/jchv/go-webview2"
@@ -54,26 +55,150 @@ func runWindow(opts Options, url string, onClose func()) error {
 	defer w.Destroy()
 	w.SetSize(winW, winH, webview.HintNone)
 
-	// 用户点窗口关闭时：先让前端落盘并询问快速模式是否另存为工程。
-	// 前端没实现/报错也继续关窗，不能把人锁在窗子里。
-	var once sync.Once
-	if onClose != nil {
-		if err := w.Bind("appClosing", func() {
-			w.Dispatch(func() {
-				w.Eval(`(function(){ try { if (window.dshSaveChoice) window.dshSaveChoice(); } catch (e) {} })();`)
-			})
-			once.Do(onClose)
-		}); err != nil {
-			w.Dispatch(func() {
-				w.Eval(`(function(){ try { if (window.dshSaveChoice) window.dshSaveChoice(); } catch (e) {} })();`)
-			})
-			once.Do(onClose)
-		}
-	}
+	// 用户点窗口关闭时：先问前端要不要保存，再决定关不关。
+	// go-webview2 的 wndproc 收到 WM_CLOSE 直接 DestroyWindow，前端来不及弹窗，
+	// 所以这里子类化窗口过程，把 WM_CLOSE 截下来。
+	guard := newCloseGuard(w, onClose)
+	guard.install() // 必须在 Navigate 之前：回执函数靠文档创建期脚本注入
 	w.Navigate(url)
 	w.Run()
 	return nil
 }
+
+// ── 关窗询问 ────────────────────────────────────────────
+// 窗口过程被换成 closeGuard.wndProc：第一次 WM_CLOSE 拦下并问前端，
+// 前端回 true 才放行（重新投递一次 WM_CLOSE），回 false 就什么都不做。
+
+const (
+	wmClose    = 0x0010
+	gwlWndProc = ^uintptr(3) // GWLP_WNDPROC = -4
+
+	// closeAskTimeout 前端回执的最长等待时间。
+	// 给足思考时间（10 分钟），超时才按同意退出处理：
+	// 页面脚本坏掉不该让人关不掉窗口，而退出前 onClose 还会留一份快照。
+	closeAskTimeout = 10 * time.Minute
+)
+
+var (
+	procSetWindowLongPtr = user32DLL.NewProc("SetWindowLongPtrW")
+	procCallWindowProc   = user32DLL.NewProc("CallWindowProcW")
+	procPostMessage      = user32DLL.NewProc("PostMessageW")
+	procDefWindowProc    = user32DLL.NewProc("DefWindowProcW")
+)
+
+type closeGuard struct {
+	w       webview.WebView
+	onClose func()
+
+	hwnd    uintptr
+	oldProc uintptr
+
+	mu      sync.Mutex
+	asking  bool
+	allowed bool
+	once    sync.Once
+	answer  chan bool
+}
+
+func newCloseGuard(w webview.WebView, onClose func()) *closeGuard {
+	return &closeGuard{w: w, onClose: onClose, answer: make(chan bool, 1)}
+}
+
+// install 把窗口过程换成自己的，并注册前端回执入口。
+func (g *closeGuard) install() {
+	hwnd := uintptr(g.w.Window())
+	if hwnd == 0 {
+		return
+	}
+	g.hwnd = hwnd
+
+	// 前端问完后调 window.dshSaveResult(true/false) 回执；没实现就当同意退出。
+	_ = g.w.Bind("dshSaveResult", func(allow bool) {
+		select {
+		case g.answer <- allow:
+		default: // 已有回执在排队，忽略重复
+		}
+	})
+
+	cb := syscall.NewCallback(g.wndProc)
+	prev, _, _ := procSetWindowLongPtr.Call(hwnd, gwlWndProc, cb)
+	if prev == 0 {
+		// 32 位系统没有 SetWindowLongPtrW，退回 SetWindowLongW
+		if p := user32DLL.NewProc("SetWindowLongW"); p.Find() == nil {
+			prev, _, _ = p.Call(hwnd, gwlWndProc, cb)
+		}
+	}
+	g.oldProc = prev
+}
+
+func (g *closeGuard) wndProc(hwnd, msg, wp, lp uintptr) uintptr {
+	if msg == wmClose && hwnd == g.hwnd {
+		g.mu.Lock()
+		if g.allowed {
+			g.mu.Unlock()
+			return g.callOld(hwnd, msg, wp, lp)
+		}
+		busy := g.asking
+		g.asking = true
+		g.mu.Unlock()
+		if !busy {
+			go g.ask()
+		}
+		return 0 // 吞掉这次关闭，等前端答复
+	}
+	return g.callOld(hwnd, msg, wp, lp)
+}
+
+// callOld 把消息交回原窗口过程；子类化没成功时退回 DefWindowProc，
+// 保证窗口还能正常拖动、缩放、关闭。
+func (g *closeGuard) callOld(hwnd, msg, wp, lp uintptr) uintptr {
+	if g.oldProc != 0 {
+		r, _, _ := procCallWindowProc.Call(g.oldProc, hwnd, msg, wp, lp)
+		return r
+	}
+	r, _, _ := procDefWindowProc.Call(hwnd, msg, wp, lp)
+	return r
+}
+
+// ask 让前端弹「另存 / 丢弃 / 取消」。
+// 前端没实现、抛异常或迟迟不回，都按同意退出处理——不能把人锁死在窗子里。
+func (g *closeGuard) ask() {
+	g.w.Dispatch(func() {
+		g.w.Eval(`(function(){ try {
+			if (!window.dshSaveChoice) { if (window.dshSaveResult) window.dshSaveResult(true); return; }
+			Promise.resolve(window.dshSaveChoice()).then(function(ok){
+				if (window.dshSaveResult) window.dshSaveResult(ok !== false);
+			}, function(){ if (window.dshSaveResult) window.dshSaveResult(true); });
+		} catch (e) { try { if (window.dshSaveResult) window.dshSaveResult(true); } catch (e2) {} } })();`)
+	})
+
+	var allow bool
+	select {
+	case allow = <-g.answer:
+	case <-time.After(closeAskTimeout):
+		// 前端一直不回（脚本出错、页面卡死）：不能把人锁死在窗子里，
+		// 按同意退出处理；onClose 里还会再留一份快照兜底。
+		allow = true
+	}
+
+	if !allow {
+		g.mu.Lock()
+		g.asking = false
+		g.mu.Unlock()
+		return
+	}
+	// 真正退出前再落一次盘（前端已处理时这里是空操作）
+	if g.onClose != nil {
+		g.once.Do(g.onClose)
+	}
+	g.mu.Lock()
+	g.allowed = true
+	g.mu.Unlock()
+	procPostMessage.Call(g.hwnd, wmClose, 0, 0)
+}
+
+// user32DLL 是 user32.dll 的惰性句柄，窗口子类化与 DPI 设置共用。
+var user32DLL = syscall.NewLazyDLL("user32.dll")
 
 // enableDPIAwareness 让进程按 Per-Monitor V2 处理 DPI。
 //
@@ -81,7 +206,7 @@ func runWindow(opts Options, url string, onClose func()) error {
 // Win8.1 的 shcore.SetProcessDpiAwareness → Vista 的 SetProcessDPIAware。
 // 任一成功即可；全失败时退回系统默认（高缩放下会被整幅位图拉伸）。
 func enableDPIAwareness() {
-	user32 := syscall.NewLazyDLL("user32.dll")
+	user32 := user32DLL
 	// DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 的值是 -4
 	const perMonitorAwareV2 = ^uintptr(3)
 	if p := user32.NewProc("SetProcessDpiAwarenessContext"); p.Find() == nil {

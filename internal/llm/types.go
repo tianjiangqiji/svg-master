@@ -1,7 +1,6 @@
 // Package llm 是四种协议的统一客户端层。
 //
-// 中间表示刻意保持"哑数据"：只有 Block 的联合体，不含任何协议特有字段，
-// 由各协议实现自己负责编码/解码，上层（agent / api）永远只见这一套类型。
+// 可见内容使用 Block；协议原生输出作为不透明数据随历史保存，供对应客户端续传。
 package llm
 
 import (
@@ -61,8 +60,15 @@ type Block struct {
 
 // Message 一条消息。
 type Message struct {
-	Role   string  `json:"role"`
-	Blocks []Block `json:"blocks"`
+	Role         string        `json:"role"`
+	Blocks       []Block       `json:"blocks"`
+	NativeOutput *NativeOutput `json:"nativeOutput,omitempty"`
+}
+
+// NativeOutput 必须按原顺序、原字段回传，尤其不能丢失加密推理、phase 与工具调用 ID。
+type NativeOutput struct {
+	Protocol string            `json:"protocol"`
+	Items    []json.RawMessage `json:"items"`
 }
 
 // TextMsg 构造纯文本消息。
@@ -109,17 +115,22 @@ const (
 	EvUsage     = "usage"
 	EvDone      = "done"
 	EvError     = "error"
+	EvOutput    = "output"   // 不透明原生输出，仅供历史续传，不向 UI 展开
+	EvContinue  = "continue" // 服务端暂停，携带原生输出继续下一轮
 )
 
 // StreamEvent 流式事件。
 type StreamEvent struct {
-	Kind  string `json:"kind"`
-	Text  string `json:"text,omitempty"`
-	Index int    `json:"index,omitempty"` // 工具调用序号
-	ID    string `json:"id,omitempty"`    // 工具调用 id
-	Name  string `json:"name,omitempty"`  // 工具名
-	Usage *Usage `json:"usage,omitempty"`
-	Err   string `json:"err,omitempty"`
+	Kind    string        `json:"kind"`
+	Text    string        `json:"text,omitempty"`
+	Index   int           `json:"index,omitempty"` // 工具调用序号
+	ID      string        `json:"id,omitempty"`    // 工具调用 id
+	Name    string        `json:"name,omitempty"`  // 工具名
+	Usage   *Usage        `json:"usage,omitempty"`
+	Err     string        `json:"err,omitempty"`
+	Cause   error         `json:"-"`
+	Output  *NativeOutput `json:"-"`
+	Replace bool          `json:"-"` // 工具最终参数覆盖增量，避免 done 快照被重复拼接
 }
 
 // Request 一次模型请求（已与协议无关）。

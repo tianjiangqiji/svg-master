@@ -176,12 +176,11 @@ func toLayerInfo(l project.Layer) agent.LayerInfo {
 
 // projectState 当前打开的工程与模式。
 type projectState struct {
-	mu         sync.RWMutex
-	p          *project.Project
-	mode       string    // quick | project
-	dirty      bool      // 快速模式下有未保存的改动（退出时据此询问）
-	rootHint   string    // 工程模式根目录（创建/打开工程的默认位置）
-	saveWaiter chan bool // 退出询问的等待通道（true=保留/另存，false=丢弃）
+	mu       sync.RWMutex
+	p        *project.Project
+	mode     string // quick | project
+	dirty    bool   // 快速模式下有未保存的改动（退出时据此询问）
+	rootHint string // 工程模式根目录（创建/打开工程的默认位置）
 }
 
 // Mode 当前运行模式。
@@ -288,12 +287,22 @@ func (s *Server) closeProject(purgeQuick bool) error {
 	return nil
 }
 
-// markDirty 记录快速模式下的改动（退出时要问用户是否保存）。
+// markDirty 记录一次改动并即时落盘。
+//
+// 两种模式都会写盘：工程模式落到用户目录（关窗时不必再问），
+// 快速模式落到内置临时目录（只在内存里标脏，退出时问用户要不要另存）。
+// 这样进程被强杀也不会丢内容。
 func (s *Server) markDirty() {
 	s.proj.mu.Lock()
-	defer s.proj.mu.Unlock()
-	if s.proj.mode == config.ModeQuick {
+	mode, p := s.proj.mode, s.proj.p
+	if mode == config.ModeQuick {
 		s.proj.dirty = true
+	}
+	s.proj.mu.Unlock()
+
+	if p != nil {
+		// 落盘失败不打断当前操作，前端仍会看到内存里的最新状态。
+		_ = p.Save()
 	}
 }
 
@@ -414,30 +423,13 @@ func (s *Server) NeedsSavePrompt() bool {
 	return s.proj.mode == config.ModeQuick && s.proj.dirty && s.proj.p != nil
 }
 
-// RequestSaveChoice 通知前端弹窗询问，并等待前端回执（最多 timeout）。
-// 前端会依次尝试：window.dshSaveChoice（宿主注入）→ window.appSaveChoice → 直接 POST /api/project/close。
-func (s *Server) RequestSaveChoice(timeout time.Duration) {
-	s.proj.mu.Lock()
-	s.proj.saveWaiter = make(chan bool, 1)
-	ch := s.proj.saveWaiter
-	s.proj.mu.Unlock()
-
-	select {
-	case keep := <-ch:
-		// keep 为 true 表示用户选择保留内容 → 另存为工程目录。
-		if keep {
-			_ = s.SaveQuickSnapshot()
-		} else {
-			_ = s.closeProject(true)
-		}
-	case <-time.After(timeout):
-		// 前端没回执：保守做法是保留内容（不删除用户可能想要的作品）。
+// BackupQuickOnExit 关窗时的兜底：快速模式还有未保存改动就留一份快照。
+// 询问本身由前端完成（窗口过程拦 WM_CLOSE 后调 window.dshSaveChoice），
+// 这里绝不能再阻塞等回执，否则关窗会卡住。
+func (s *Server) BackupQuickOnExit() {
+	if s.NeedsSavePrompt() {
 		_ = s.SaveQuickSnapshot()
 	}
-
-	s.proj.mu.Lock()
-	s.proj.saveWaiter = nil
-	s.proj.mu.Unlock()
 }
 
 // SaveQuickSnapshot 把快速模式的临时工程复制到 data/quick-backup/<时间戳>，

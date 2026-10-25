@@ -176,12 +176,21 @@ button,input,select,textarea{font-family:inherit;font-size:inherit;color:inherit
 /* 模型下拉菜单：fixed 定位，位置由 JS 按徽标 getBoundingClientRect() 计算 */
 .model-menu{
   position:fixed;top:0;right:auto;left:0;z-index:80;
-  width:320px;min-width:300px;max-width:420px;max-height:60vh;overflow:auto;
+  width:320px;min-width:300px;max-width:420px;max-height:60vh;
+  overflow-y:scroll;overflow-x:hidden;overscroll-behavior:contain;
+  scrollbar-gutter:stable;
   background:var(--panel);border:1px solid var(--border2);border-radius:var(--radius);
   box-shadow:0 12px 36px var(--shadow);padding:5px;
   transform-origin:top right;
   transition:opacity 130ms var(--ease),transform 130ms var(--ease);
 }
+/* 模型多时菜单必须能滚：滚动条常驻且加宽，避免 WebView2 覆盖式滚动条看不见 */
+.model-menu::-webkit-scrollbar{width:10px}
+.model-menu::-webkit-scrollbar-track{background:var(--panel2);border-radius:6px}
+.model-menu::-webkit-scrollbar-thumb{
+  background:var(--scrollbar);border-radius:6px;border:2px solid var(--panel);
+}
+.model-menu::-webkit-scrollbar-thumb:hover{background:var(--scrollbar-hover)}
 .model-menu.hide,
 .model-menu.entering{opacity:0;transform:translateY(-4px) scale(.98)}
 .mm-head{
@@ -548,22 +557,43 @@ input[type=checkbox]{accent-color:var(--accent);width:13px;height:13px;margin:0;
 /* ── 右栏 ───────────────────────────────────────────── */
 .right{
   width:300px;flex:0 0 300px;background:var(--panel);border-left:1px solid var(--border);
-  display:flex;flex-direction:column;min-height:0;overflow:hidden;
+  display:flex;flex-direction:column;min-height:0;
+  /* 四块全展开且窗口很矮时兜底：整栏可滚；正常情况下由块内 .rbody 各自滚 */
+  overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;
 }
-.rblock{border-bottom:1px solid var(--border);display:flex;flex-direction:column;min-height:0}
-.rblock.usage{flex:0 0 auto;padding:8px 10px;overflow-y:auto}
-.rblock.agent{flex:0 0 auto;padding:8px 10px;overflow-y:auto}
+.right::-webkit-scrollbar{width:8px}
+.right::-webkit-scrollbar-track{background:transparent}
+.right::-webkit-scrollbar-thumb{background:var(--scrollbar);border-radius:4px}
+.right::-webkit-scrollbar-thumb:hover{background:var(--scrollbar-hover)}
+/* 四个区块统一结构：.rhead（可点折叠）+ .rbody（可整体滚动的内容区）。
+   折叠时只留标题条，把高度还给下面的区块。 */
+.rblock{border-bottom:1px solid var(--border);display:flex;flex-direction:column;min-height:0;flex:0 0 auto}
 .rhead{
-  display:flex;align-items:center;justify-content:space-between;gap:8px;
-  font-size:11px;color:var(--muted);letter-spacing:.4px;text-transform:uppercase;margin-bottom:6px;
+  display:flex;align-items:center;gap:8px;flex:0 0 auto;
+  padding:8px 10px;cursor:pointer;user-select:none;
+  font-size:11px;color:var(--muted);letter-spacing:.4px;text-transform:uppercase;
+  transition:background var(--t),color var(--t);
 }
+.rhead:hover{background:var(--hover)}
+.rhead > span:first-of-type{flex:0 0 auto}
 .rhead b{color:var(--text);font-family:var(--mono);text-transform:none;letter-spacing:0}
-.meter{height:6px;background:var(--field);border-radius:3px;overflow:hidden;border:1px solid var(--border)}
+.rhead .mini{cursor:pointer}
+.rchev{
+  flex:0 0 auto;width:9px;text-align:center;font-style:normal;font-size:9px;
+  line-height:1;color:var(--muted);transition:color var(--t);
+}
+.rhead:hover .rchev{color:var(--accent)}
+.rbody{
+  display:flex;flex-direction:column;min-height:0;
+  padding:0 10px 8px;overflow-y:auto;overflow-x:hidden;
+}
+.rblock.collapsed > .rbody{display:none}
+.rblock.collapsed > .rhead{padding-bottom:8px}
+.meter{height:6px;background:var(--field);border-radius:3px;overflow:hidden;border:1px solid var(--border);flex:0 0 auto}
 .meter i{display:block;height:100%;width:0;background:var(--ok);transition:width 200ms,background 200ms}
-.kv{display:flex;justify-content:space-between;gap:8px;font-size:11px;color:var(--muted);padding:2px 0}
+.kv{display:flex;justify-content:space-between;gap:8px;font-size:11px;color:var(--muted);padding:2px 0;flex:0 0 auto}
 .kv > span:first-child{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .kv b{flex:0 0 auto;color:var(--text2);font-family:var(--mono);font-weight:500;white-space:nowrap}
-.rblock.agent{flex:0 0 auto;padding:8px 10px}
 .agent-body{padding-top:2px}
 .agent-body .fld:last-child{margin-bottom:0}
 
@@ -631,7 +661,8 @@ input[type=checkbox]{accent-color:var(--accent);width:13px;height:13px;margin:0;
 .proto-card b{display:block;font-size:11px;font-weight:600;color:var(--text2)}
 .proto-card small{display:block;font-size:10px;color:var(--muted);font-family:var(--mono);margin-top:1px}
 .model-add{display:flex;gap:4px;margin-bottom:5px}
-.model-add input{flex:1}
+.model-add input{flex:1;min-width:0}
+.model-add .mini{flex:0 0 auto;white-space:nowrap}
 .model-list{
   border:1px solid var(--border);border-radius:var(--radius);background:var(--field);
   max-height:120px;overflow:auto;padding:3px;
@@ -734,10 +765,14 @@ table.caps input[type=checkbox]{margin:0 auto;display:block}
 }
 
 /* ── 右栏「模型输出」：思维链 / 正文 / 错误 交替流 ─────── */
-.rblock.raw{flex:1 1 auto;min-height:120px;padding:0;display:flex;flex-direction:column;overflow:hidden}
-.rblock.raw .rhead{padding:8px 10px 6px;margin-bottom:0;flex:0 0 auto}
+/* 展开时吃掉右栏剩余高度；.rbody 是唯一滚动容器（含底部工具条一起滚） */
+.rblock.raw{flex:1 1 auto;min-height:120px;overflow:hidden}
+.rblock.raw.collapsed{flex:0 0 auto;min-height:0}
+.rblock.raw .rhead{padding:8px 10px;margin-bottom:0}
+.rblock.raw > .rbody{padding:0;overflow-y:auto;overscroll-behavior:contain}
 .flow-body{
-  flex:1;min-height:0;overflow-y:auto;padding:6px 10px 8px;
+  flex:0 0 auto;
+  padding:6px 10px 8px;
   display:flex;flex-direction:column;gap:8px;
 }
 .flow-empty{padding:18px 0;text-align:center;font-size:11px;color:var(--muted)}
@@ -859,9 +894,12 @@ table.caps input[type=checkbox]{margin:0 auto;display:block}
 /* ── 图层 / 工程（本次新增） ─────────────────────────── */
 .switches{display:flex;flex-direction:column;gap:5px}
 
-.rblock.layers{flex:0 0 auto;padding:8px 10px 6px}
+.rblock.layers > .rbody{padding:0 10px 6px}
+/* 图层块限高：超过 34vh 后整个内容区（列表 + 底部按钮）一起滚 */
+.rblock.layers:not(.collapsed){max-height:34vh}
+/* 图层列表不再自己开滚动条 */
 .layer-list{
-  display:flex;flex-direction:column;gap:3px;max-height:220px;overflow-y:auto;
+  display:flex;flex-direction:column;gap:3px;
   margin:4px 0 6px;padding-right:2px;
 }
 .layer-row{

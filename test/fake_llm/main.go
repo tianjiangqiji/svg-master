@@ -43,6 +43,7 @@ var slowMS time.Duration
 
 func main() {
 	port := flag.Int("port", 18999, "监听端口")
+	delay := flag.Int("delay", 0, "每次模型请求响应头前的延时（毫秒），用于验证停止")
 	slow := flag.Int("slow", 0, "工具参数分片之间的额外延时（毫秒），用于观察实时预览")
 	flag.Parse()
 	slowMS = time.Duration(*slow) * time.Millisecond
@@ -62,7 +63,19 @@ func main() {
 	log.Printf("  OpenAI Resp  : http://%s/v1", addr)
 	log.Printf("  Anthropic    : http://%s", addr)
 	log.Printf("  Gemini       : http://%s", addr)
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if *delay > 0 && r.Method == http.MethodPost {
+			timer := time.NewTimer(time.Duration(*delay) * time.Millisecond)
+			defer timer.Stop()
+			select {
+			case <-r.Context().Done():
+				return
+			case <-timer.C:
+			}
+		}
+		mux.ServeHTTP(w, r)
+	})
+	if err := http.ListenAndServe(addr, handler); err != nil {
 		log.Fatal(err)
 	}
 }

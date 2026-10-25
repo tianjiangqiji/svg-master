@@ -24,10 +24,12 @@ const (
 
 // streamResult 一次流式调用的累积结果。
 type streamResult struct {
-	text      string
-	thinking  string
-	toolCalls []llm.ToolCall
-	usage     *llm.Usage
+	text         string
+	thinking     string
+	toolCalls    []llm.ToolCall
+	usage        *llm.Usage
+	output       *llm.NativeOutput
+	continueTurn bool
 }
 
 // toolCallAcc 单个工具调用的累积器（按 Index 归并）。
@@ -66,29 +68,48 @@ func (e *Engine) streamRetries() int {
 // streamOnce 发起一次模型请求并消费流，带重试与看门狗。
 func (e *Engine) streamOnce(ctx context.Context, req llm.Request) (*streamResult, error) {
 	var lastErr error
+	var total *llm.Usage
+	failure := func(err error) (*streamResult, error) { return &streamResult{usage: total}, err }
 	for attempt := 0; attempt <= maxStreamRetries; attempt++ {
 		if attempt > 0 {
 			e.noteStreamRetry()
 			delay := retryDelay(attempt - 1)
 			e.logf("warn", "模型请求失败（%v），%s 后重试（第 %d/%d 次）", lastErr, delay, attempt, maxStreamRetries)
 			if err := sleepCtx(ctx, delay); err != nil {
-				return nil, context.Canceled
+				return failure(context.Canceled)
 			}
 		}
 
 		res, err := e.streamAttempt(ctx, req)
+		if res != nil && res.usage != nil {
+			if total == nil {
+				total = &llm.Usage{}
+			}
+			total.InputTokens += res.usage.InputTokens
+			total.OutputTokens += res.usage.OutputTokens
+			total.CacheReadTokens += res.usage.CacheReadTokens
+			total.CacheWriteTokens += res.usage.CacheWriteTokens
+			total.TotalTokens += res.usage.TotalTokens
+		}
 		if err == nil {
+			if ctx.Err() != nil {
+				return failure(context.Canceled)
+			}
+			res.usage = total
 			return res, nil
 		}
 		if errors.Is(err, context.Canceled) || ctx.Err() != nil {
-			return nil, context.Canceled
+			return failure(context.Canceled)
+		}
+		if !llm.Retryable(err) {
+			return failure(err)
 		}
 		lastErr = err
 	}
 	if lastErr == nil {
 		lastErr = errors.New("模型请求失败")
 	}
-	return nil, fmt.Errorf("模型请求连续 %d 次失败：%w", maxStreamRetries+1, lastErr)
+	return failure(fmt.Errorf("模型请求连续 %d 次失败：%w", maxStreamRetries+1, lastErr))
 }
 
 // streamAttempt 单次流式请求：带 5 分钟无事件看门狗。
@@ -125,21 +146,24 @@ func (e *Engine) streamAttempt(ctx context.Context, req llm.Request) (*streamRes
 		case <-ctx.Done():
 			// 必须排空 channel，否则客户端 goroutine 泄漏。
 			go drain(ch)
-			return nil, context.Canceled
+			return res, context.Canceled
 
 		case <-watchdog.C:
 			cancel()
 			go drain(ch)
-			return nil, fmt.Errorf("模型响应超过 %s 没有任何事件，已中止本次请求", streamWatchdog)
+			return res, fmt.Errorf("模型响应超过 %s 没有任何事件，已中止本次请求", streamWatchdog)
 
 		case ev, ok := <-ch:
 			if !ok {
+				if ctx.Err() != nil {
+					return res, context.Canceled
+				}
 				return finishStream(res, accs, order)
 			}
 			reset()
 			if done, err := e.handleStreamEvent(ev, res, accs, &order); err != nil {
 				go drain(ch)
-				return nil, err
+				return res, err
 			} else if done {
 				go drain(ch)
 				return finishStream(res, accs, order)
@@ -193,6 +217,9 @@ func (e *Engine) handleStreamEvent(ev llm.StreamEvent, res *streamResult, accs m
 			acc.name = ev.Name
 		}
 		if ev.Text != "" {
+			if ev.Replace {
+				acc.args.Reset()
+			}
 			acc.args.WriteString(ev.Text)
 			acc.hasArgs = true
 			// emit_svg 的参数里就是整段 SVG：边收边抽出已到达的部分推给上层，
@@ -209,11 +236,19 @@ func (e *Engine) handleStreamEvent(ev llm.StreamEvent, res *streamResult, accs m
 		}
 
 	case llm.EvError:
+		if ev.Cause != nil {
+			return false, ev.Cause
+		}
 		msg := strings.TrimSpace(ev.Err)
 		if msg == "" {
 			msg = "模型流返回未知错误"
 		}
 		return false, errors.New(msg)
+
+	case llm.EvOutput:
+		res.output = ev.Output
+	case llm.EvContinue:
+		res.continueTurn = true
 
 	case llm.EvDone:
 		return true, nil

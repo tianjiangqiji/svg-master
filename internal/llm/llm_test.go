@@ -920,9 +920,10 @@ func TestFetchRemoteModels(t *testing.T) {
 		wantNames []string
 	}{
 		{
-			name:      "openai-completions",
-			protocol:  config.ProtoOpenAIChat,
-			path:      "/models",
+			name:     "openai-completions",
+			protocol: config.ProtoOpenAIChat,
+			// base 只给到域名（不带 /v1）时，模型列表与聊天端点走同一套补段规则。
+			path:      "/v1/models",
 			headerKey: "Authorization",
 			headerVal: "Bearer sk-x",
 			payload:   `{"object":"list","data":[{"id":"gpt-4o"},{"id":"gpt-4.1-mini"}]}`,

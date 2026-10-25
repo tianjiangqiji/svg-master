@@ -333,8 +333,8 @@ func TestRunMaxStepsBreaker(t *testing.T) {
 	eng := New(deps)
 
 	stats, err := eng.Run(context.Background(), Task{Prompt: "一直问"})
-	if err != nil {
-		t.Fatalf("Run 返回错误：%v", err)
+	if err == nil || !strings.Contains(err.Error(), "轮数上限") {
+		t.Fatalf("达到轮数上限应报告任务未完成，实际：%v", err)
 	}
 	if stats.ModelSteps != 2 {
 		t.Fatalf("ModelSteps = %d，期望 2（受 MaxSteps 限制）", stats.ModelSteps)

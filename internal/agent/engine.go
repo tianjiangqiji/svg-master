@@ -24,6 +24,7 @@ type engineImpl struct {
 type engineState struct {
 	mu          sync.Mutex
 	cancel      context.CancelFunc
+	aborted     bool
 	canvas      config.CanvasPreset
 	svg         string
 	report      svg.Report
@@ -141,6 +142,7 @@ func (e *Engine) abort() {
 		return
 	}
 	e.impl.st.mu.Lock()
+	e.impl.st.aborted = true
 	cancel := e.impl.st.cancel
 	e.impl.st.mu.Unlock()
 	if cancel != nil {
@@ -213,6 +215,9 @@ func (e *Engine) run(ctx context.Context, t Task) (Stats, error) {
 
 	st.mu.Lock()
 	st.cancel = cancel
+	if st.aborted {
+		cancel()
+	}
 	st.used = 0
 	st.mu.Unlock()
 	defer func() {
@@ -255,10 +260,9 @@ func (e *Engine) run(ctx context.Context, t Task) (Stats, error) {
 	}
 	// 用户清空过上下文：提醒它先读图层再动手，而不是假设画布是空的。
 	// 动图模式没有图层工具，这条提醒会误导模型，因此跳过。
-	if e.deps.ContextClearedAt > 0 && e.deps.Layers != nil && mode != config.GenModeAnim {
+	if e.deps.ContextClearedAt > 0 && e.deps.LayerTools {
 		system += "\n\n" + contextClearedNote()
 	}
-	system = appendEmitRequirement(system, t.Prompt)
 
 	msgs := buildInitialMessages(t)
 	// 连续对话：把上一轮结束时的完整历史拼在本次输入之前（浅拷贝，运行期只 append）。
@@ -275,6 +279,8 @@ func (e *Engine) run(ctx context.Context, t Task) (Stats, error) {
 
 	var out Stats
 	modelSteps, emptyRetry := 0, 0
+	deliveryOK := false
+	completed := false
 	breaker := newBreaker()
 
 	for modelSteps < maxSteps {
@@ -310,6 +316,9 @@ func (e *Engine) run(ctx context.Context, t Task) (Stats, error) {
 		}
 
 		res, err := e.streamOnce(runCtx, req)
+		if res != nil {
+			applyUsage(&out, res.usage)
+		}
 		if err != nil {
 			e.saveHistory(msgs)
 			e.finishStats(&out, start)
@@ -321,21 +330,31 @@ func (e *Engine) run(ctx context.Context, t Task) (Stats, error) {
 
 		modelSteps++
 		out.ModelSteps = modelSteps
-		applyUsage(&out, res.usage)
 		e.fillContextStats(&out)
 		if res.usage != nil {
 			e.emit(Event{Kind: EvUsage, Usage: statsCopy(out)})
 		}
 
 		assistant := buildAssistantMessage(res)
+		if res.continueTurn {
+			msgs = append(msgs, assistant)
+			continue
+		}
 
 		// 空回复：无正文、无思考、无工具调用 —— 重试有限次。
-		if len(assistant.Blocks) == 0 && len(res.toolCalls) == 0 {
+		if strings.TrimSpace(res.text) == "" && len(res.toolCalls) == 0 {
+			if deliveryOK {
+				if assistant.NativeOutput != nil {
+					msgs = append(msgs, assistant)
+				}
+				e.logf("info", "SVG 已交付，模型结束回复")
+				completed = true
+				break
+			}
 			emptyRetry++
 			if emptyRetry <= maxEmptyRetries {
 				e.logf("warn", "模型返回空回复，第 %d 次重试", emptyRetry)
-				modelSteps--
-				out.ModelSteps = modelSteps
+				e.noteStreamRetry()
 				if err := sleepCtx(runCtx, retryDelay(emptyRetry-1)); err != nil {
 					e.saveHistory(msgs)
 					e.finishStats(&out, start)
@@ -343,8 +362,9 @@ func (e *Engine) run(ctx context.Context, t Task) (Stats, error) {
 				}
 				continue
 			}
-			e.logf("warn", "模型连续空回复，结束任务")
-			break
+			e.saveHistory(msgs)
+			e.finishStats(&out, start)
+			return out, errors.New("模型连续返回空回复，未完成交付；请检查渠道响应或输出 token 上限")
 		}
 		emptyRetry = 0
 
@@ -352,13 +372,19 @@ func (e *Engine) run(ctx context.Context, t Task) (Stats, error) {
 
 		if len(res.toolCalls) == 0 {
 			// 无工具调用 → 任务完成。
+			completed = true
 			break
 		}
 
 		// 串行执行工具，保证事件顺序稳定。
 		toolMsg := llm.Message{Role: llm.RoleTool}
-		for _, call := range res.toolCalls {
+		for i, call := range res.toolCalls {
 			if err := runCtx.Err(); err != nil {
+				// 保持调用/结果配对，防止停止后继续会话触发缺少工具结果的协议错误。
+				for _, pending := range res.toolCalls[i:] {
+					toolMsg.Blocks = append(toolMsg.Blocks, toolResultBlock(pending, "用户已中止，此工具未执行", true))
+				}
+				msgs = append(msgs, toolMsg)
 				e.saveHistory(msgs)
 				e.finishStats(&out, start)
 				return out, err
@@ -368,6 +394,7 @@ func (e *Engine) run(ctx context.Context, t Task) (Stats, error) {
 
 			// 熔断：同一工具连续重复同一错误时不再执行，改为注入提示。
 			if stop, hint := breaker.hit(call, runCtx); stop {
+				deliveryOK = false
 				out.ToolErrors++
 				content := fmt.Sprintf("工具 %s 已连续 %d 次报相同错误，本次调用被熔断。请换一种方式，或直接给出可用的结果。", call.Name, repeatedErrorCallThreshold)
 				e.emit(Event{Kind: EvToolEnd, CallID: call.ID, Tool: call.Name, Error: content})
@@ -384,9 +411,13 @@ func (e *Engine) run(ctx context.Context, t Task) (Stats, error) {
 
 			oc := e.runTool(runCtx, call)
 			if oc.IsError {
+				deliveryOK = false
 				out.ToolErrors++
 				e.emit(Event{Kind: EvToolEnd, CallID: call.ID, Tool: call.Name, Error: oc.Content})
 			} else {
+				if call.Name == ToolEmitSVG {
+					deliveryOK = true
+				}
 				e.emit(Event{Kind: EvToolEnd, CallID: call.ID, Tool: call.Name, Result: oc.Content})
 			}
 			breaker.record(call, oc)
@@ -397,10 +428,6 @@ func (e *Engine) run(ctx context.Context, t Task) (Stats, error) {
 		}
 	}
 
-	if modelSteps >= maxSteps {
-		e.logf("warn", "已达模型轮数上限（%d），任务结束", maxSteps)
-	}
-
 	st.mu.Lock()
 	st.used = estTokensAll(msgs)
 	st.msgs = len(msgs)
@@ -408,6 +435,9 @@ func (e *Engine) run(ctx context.Context, t Task) (Stats, error) {
 	e.saveHistory(msgs)
 
 	e.finishStats(&out, start)
+	if !completed && modelSteps >= maxSteps {
+		return out, fmt.Errorf("已达模型轮数上限（%d），任务尚未完成，当前作品已保留", maxSteps)
+	}
 	return out, nil
 }
 
@@ -497,7 +527,7 @@ func buildInitialMessages(t Task) []llm.Message {
 
 // buildAssistantMessage 把一次流的累积结果转成 assistant 消息。
 func buildAssistantMessage(res *streamResult) llm.Message {
-	msg := llm.Message{Role: llm.RoleAssistant}
+	msg := llm.Message{Role: llm.RoleAssistant, NativeOutput: res.output}
 	if strings.TrimSpace(res.thinking) != "" {
 		msg.Blocks = append(msg.Blocks, llm.Block{Type: llm.BlockThinking, Thinking: res.thinking})
 	}

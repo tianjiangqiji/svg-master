@@ -1,8 +1,13 @@
 // Package config 定义设置结构并负责持久化（绿色版：exe 同级 data/settings.json）。
 package config
 
+import (
+	"regexp"
+	"strings"
+)
+
 // AppVersion 是程序版本号，前端徽标与 /api/state 共用。
-const AppVersion = "1.4.0"
+const AppVersion = "1.4.1"
 
 // SettingsVersion 是 settings.json 的格式版本。
 // v4 引入生成方式三级开关（agent.genMode）。
@@ -88,6 +93,57 @@ func MetaOf(protocol string) (ProtocolMeta, bool) {
 		}
 	}
 	return ProtocolMeta{}, false
+}
+
+// versionTailRe 匹配路径末尾的版本段：/v1、/v1beta、/v4、/v1alpha…
+var versionTailRe = regexp.MustCompile(`/v\d+[a-z0-9]*$`)
+
+// CanonicalBaseURL 把用户输入的 Base URL 归一成可持久化的稳定形态。
+//
+// 这是「Base URL 不再必填 /v1」的落点：
+//   - 去空白；尾部斜杠一律削掉（含多重斜杠），保留 scheme 的 //
+//   - 没写协议时补 https://（用户常直接粘 api.xxx.com）
+//   - 已有版本段（/v1、/v1beta、/v4…）就原样尊重
+//   - 没有版本段时按协议补：gemini → /v1beta，其余 → /v1
+//
+// 空输入回落到协议默认值；未知协议原样返回。
+func CanonicalBaseURL(protocol, base string) string {
+	b := strings.TrimSpace(base)
+	meta, ok := MetaOf(protocol)
+	if !ok && b == "" {
+		return ""
+	}
+	if b == "" {
+		b = strings.TrimSpace(meta.BaseURL)
+	}
+	if b == "" {
+		return ""
+	}
+	// 补协议：只认 http/https，其它 scheme 一律视为裸主机名处理
+	lower := strings.ToLower(b)
+	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
+		b = "https://" + strings.TrimLeft(b, "/")
+		lower = strings.ToLower(b)
+	}
+	// 削尾部斜杠 + 折叠路径里的重复斜杠（scheme 的 // 必须保留）
+	b = strings.TrimRight(b, "/")
+	if i := strings.Index(b, "://"); i >= 0 {
+		head, tail := b[:i+3], b[i+3:]
+		for strings.Contains(tail, "//") {
+			tail = strings.ReplaceAll(tail, "//", "/")
+		}
+		b = head + tail
+	}
+	if b == "" {
+		return ""
+	}
+	if versionTailRe.MatchString(b) {
+		return b
+	}
+	if protocol == ProtoGemini {
+		return b + "/v1beta"
+	}
+	return b + "/v1"
 }
 
 // ModelCaps 模型能力：上下文窗口、最大输出、是否推理模型、是否支持图像输入。

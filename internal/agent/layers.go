@@ -78,7 +78,7 @@ func layerToolSpecs() []llm.ToolSpec {
 }`),
 		},
 		{
-			Name: ToolSetLayer,
+			Name:        ToolSetLayer,
 			Description: "调整图层属性：改名、显示/隐藏、锁定、不透明度、混合模式、层级。只传要改的字段。",
 			Parameters: json.RawMessage(`{
   "type": "object",
@@ -94,7 +94,7 @@ func layerToolSpecs() []llm.ToolSpec {
 }`),
 		},
 		{
-			Name: ToolDeleteLayer,
+			Name:        ToolDeleteLayer,
 			Description: "删除一个图层（连同它的文件）。仅在用户明确要求删掉某层内容时使用。",
 			Parameters: json.RawMessage(`{
   "type": "object",
@@ -192,8 +192,8 @@ func (e *Engine) runLayerTool(call llm.ToolCall) toolOutcome {
 		e.emit(Event{Kind: EvLayers, Layers: layerListOf(br)})
 		e.emit(Event{Kind: EvSVG, SVG: br.Render()})
 		return toolOutcome{Content: marshalJSON(struct {
-			OK         bool `json:"ok"`
-			Replacements int `json:"replacements"`
+			OK           bool `json:"ok"`
+			Replacements int  `json:"replacements"`
 		}{OK: true, Replacements: n})}
 
 	case ToolSetLayer:

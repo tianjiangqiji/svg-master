@@ -36,16 +36,6 @@ func buildSystemPrompt(canvas config.CanvasPreset) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// appendEmitRequirement 在用户提示词属于「只回 SVG 代码」类型时，强制要求走 emit_svg 交付。
-// 该判定只是补强：输出规范本身已写死在系统提示词里，不依赖用户怎么写。
-func appendEmitRequirement(system, prompt string) string {
-	if !looksLikeSVGOnlyPrompt(prompt) {
-		return system
-	}
-	return system + "\n\n" + "## 本次任务的交付通道\n" +
-		"用户要求直接给出 SVG 代码。你**必须**通过 emit_svg 工具交付最终 SVG（不要只在正文里贴代码）。"
-}
-
 // multiStepNote 多步开关打开时额外注入的一句话（需求：打开后多注入一句话）。
 // 它只负责「允许并鼓励分步」，具体工具箱在 layerToolsNote 里声明。
 const multiStepNote = "本次会话允许多步修改：先把任务拆成若干步，逐步调整，每步只动需要动的地方；" +
@@ -89,17 +79,6 @@ func animatedNote() string {
 		"- 也支持 SMIL（<animate> / <animateTransform> / <set>）做连续动画，但**帧分组优先**：" +
 		"SMIL 在导出 GIF 时只能按时间采样，精度不如帧分组；\n" +
 		"- 动画要能无缝循环：末帧接回首帧时不出现明显跳变。"
-}
-
-// looksLikeSVGOnlyPrompt 判断用户是否显式要求「只要 SVG 代码」（大小写不敏感）。
-func looksLikeSVGOnlyPrompt(prompt string) bool {
-	lower := strings.ToLower(prompt)
-	for _, marker := range []string{"generate an svg of", "svg code only", "只回 svg", "只输出 svg", "svg 代码"} {
-		if strings.Contains(lower, marker) {
-			return true
-		}
-	}
-	return false
 }
 
 // ratioString 把宽高化简成 "w:h"。

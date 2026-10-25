@@ -35,7 +35,7 @@ type respInputItem struct {
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
 	// function_call_output
-	Output string `json:"output,omitempty"`
+	Output *string `json:"output,omitempty"`
 }
 
 type respToolOut struct {
@@ -47,35 +47,51 @@ type respToolOut struct {
 }
 
 type respRequestOut struct {
-	Model           string          `json:"model"`
-	Instructions    string          `json:"instructions,omitempty"`
-	Input           []respInputItem `json:"input"`
-	Tools           []respToolOut   `json:"tools,omitempty"`
-	MaxOutputTokens int             `json:"max_output_tokens,omitempty"`
+	Model           string            `json:"model"`
+	Instructions    string            `json:"instructions,omitempty"`
+	Input           []json.RawMessage `json:"input"`
+	Tools           []respToolOut     `json:"tools,omitempty"`
+	MaxOutputTokens int               `json:"max_output_tokens,omitempty"`
 	Reasoning       *struct {
 		Effort  string `json:"effort,omitempty"`
 		Summary string `json:"summary,omitempty"`
 	} `json:"reasoning,omitempty"`
-	Stream bool `json:"stream"`
-	Store  bool `json:"store"`
+	Stream         bool     `json:"stream"`
+	Store          bool     `json:"store"`
+	Include        []string `json:"include,omitempty"`
+	PromptCacheKey string   `json:"prompt_cache_key,omitempty"`
 }
 
 func (c *openaiResponses) buildBody(req Request) ([]byte, error) {
 	out := respRequestOut{
-		Model:        req.Model,
-		Instructions: req.System,
-		Stream:       req.Stream,
-		Store:        false,
+		Model:          req.Model,
+		Instructions:   req.System,
+		Stream:         req.Stream,
+		Store:          false,
+		Include:        []string{"reasoning.encrypted_content"},
+		PromptCacheKey: req.SessionID,
 	}
 	for _, m := range req.Messages {
-		out.Input = append(out.Input, encodeRespMessage(m)...)
+		if m.Role == RoleAssistant && m.NativeOutput != nil && m.NativeOutput.Protocol == c.Protocol() && len(m.NativeOutput.Items) > 0 {
+			out.Input = append(out.Input, m.NativeOutput.Items...)
+			continue
+		}
+		for _, item := range encodeRespMessage(m) {
+			raw, err := json.Marshal(item)
+			if err != nil {
+				return nil, err
+			}
+			out.Input = append(out.Input, raw)
+		}
 	}
 	for _, t := range req.Tools {
+		strict := false // 工具包含可选参数；保留原 schema 的可选语义。
 		out.Tools = append(out.Tools, respToolOut{
 			Type:        "function",
 			Name:        t.Name,
 			Description: t.Description,
 			Parameters:  normalizeSchema(t.Parameters),
+			Strict:      &strict,
 		})
 	}
 	if req.MaxTokens > 0 {
@@ -130,10 +146,11 @@ func encodeRespMessage(m Message) []respInputItem {
 			if b.ToolResult == nil {
 				continue
 			}
+			output := toolResultText(b.ToolResult)
 			items = append(items, respInputItem{
 				Type:   "function_call_output",
 				CallID: b.ToolResult.CallID,
-				Output: toolResultText(b.ToolResult),
+				Output: &output,
 			})
 		}
 	}
@@ -153,7 +170,7 @@ func (c *openaiResponses) url() string {
 func (c *openaiResponses) Stream(ctx context.Context, req Request) (<-chan StreamEvent, error) {
 	body, err := c.buildBody(req)
 	if err != nil {
-		return nil, fmt.Errorf("编码 openai-responses 请求失败：%w", err)
+		return nil, noRetry(fmt.Errorf("编码 openai-responses 请求失败：%w", err))
 	}
 	headers := map[string]string{"Authorization": "Bearer " + c.key}
 	for k, v := range sessionHeaders(req.SessionID) {
@@ -168,8 +185,8 @@ func (c *openaiResponses) Stream(ctx context.Context, req Request) (<-chan Strea
 		return nil, httpError("openai-responses 请求失败", resp)
 	}
 
-	if !req.Stream {
-		raw, err := nonStreamBody(resp.Body)
+	if !req.Stream || strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "application/json") {
+		raw, err := nonStreamBody(resp.Body, d.t.IdleTimeout)
 		if err != nil {
 			return nil, err
 		}
@@ -180,7 +197,13 @@ func (c *openaiResponses) Stream(ctx context.Context, req Request) (<-chan Strea
 	go func() {
 		defer close(ch)
 		p := newPump(ctx, ch, resp.Body, d.t.IdleTimeout)
-		st := &respState{byItem: map[string]respToolRef{}}
+		st := &respState{byItem: map[string]*respToolRef{}}
+		p.endCheck = func() error {
+			if !st.completed {
+				return fmt.Errorf("openai-responses 流在 response.completed 前结束，响应不完整")
+			}
+			return nil
+		}
 		p.run(func(ev sseEvent) (bool, error) { return c.handleFrame(p, ev, st) })
 	}()
 	return ch, nil
@@ -193,9 +216,14 @@ type respItemIn struct {
 	Name    string `json:"name"`
 	Role    string `json:"role"`
 	Content []struct {
+		Type    string `json:"type"`
+		Text    string `json:"text"`
+		Refusal string `json:"refusal"`
+	} `json:"content"`
+	Summary []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
-	} `json:"content"`
+	} `json:"summary"`
 	Arguments string `json:"arguments"`
 }
 type respUsageIn struct {
@@ -203,24 +231,20 @@ type respUsageIn struct {
 	OutputTokens       int `json:"output_tokens"`
 	TotalTokens        int `json:"total_tokens"`
 	InputTokensDetails *struct {
-		CachedTokens int `json:"cached_tokens"`
+		CachedTokens     int `json:"cached_tokens"`
+		CacheWriteTokens int `json:"cache_write_tokens"`
 	} `json:"input_tokens_details"`
 }
 
 type respEventIn struct {
-	Type     string      `json:"type"`
-	Delta    string      `json:"delta"`
-	Text     string      `json:"text"`
-	ItemID   string      `json:"item_id"`
-	Item     *respItemIn `json:"item"`
-	Response *struct {
-		Usage *respUsageIn `json:"usage"`
-		Error *struct {
-			Message string `json:"message"`
-			Code    string `json:"code"`
-		} `json:"error"`
-	} `json:"response"`
-	Error *struct {
+	Type      string          `json:"type"`
+	Delta     string          `json:"delta"`
+	Text      string          `json:"text"`
+	ItemID    string          `json:"item_id"`
+	Item      json.RawMessage `json:"item"`
+	Arguments string          `json:"arguments"`
+	Response  *respResponseIn `json:"response"`
+	Error     *struct {
 		Message string `json:"message"`
 		Code    string `json:"code"`
 	} `json:"error"`
@@ -231,34 +255,42 @@ type respEventIn struct {
 // Responses 的 delta 事件只带 item_id（形如 fc_xxx），而工具结果回传要用 call_id（call_xxx），
 // 所以这里维护 item_id -> {index, call_id} 映射，保证 start / delta 的 ID 一致。
 type respState struct {
-	byItem map[string]respToolRef
-	next   int
+	byItem    map[string]*respToolRef
+	next      int
+	items     []json.RawMessage
+	text      string
+	thinking  string
+	completed bool
 }
 
 type respToolRef struct {
 	index  int
 	callID string
+	name   string
+	args   string
 }
 
-func (s *respState) ensure(item *respItemIn) (respToolRef, bool) {
+func (s *respState) ensure(item *respItemIn) *respToolRef {
 	key := item.ID
 	if key == "" {
 		key = item.CallID
 	}
 	if ref, ok := s.byItem[key]; ok {
-		if ref.callID == "" {
-			ref.callID = callIDOf(item)
-			s.byItem[key] = ref
+		if item.CallID != "" {
+			ref.callID = item.CallID
 		}
-		return ref, false
+		if item.Name != "" {
+			ref.name = item.Name
+		}
+		return ref
 	}
-	ref := respToolRef{index: s.next, callID: callIDOf(item)}
+	ref := &respToolRef{index: s.next, callID: callIDOf(item), name: item.Name}
 	s.next++
 	s.byItem[key] = ref
-	return ref, true
+	return ref
 }
 
-func (s *respState) lookup(itemID string) (respToolRef, bool) {
+func (s *respState) lookup(itemID string) (*respToolRef, bool) {
 	ref, ok := s.byItem[itemID]
 	return ref, ok
 }
@@ -270,7 +302,7 @@ func (c *openaiResponses) handleFrame(p *pump, ev sseEvent, st *respState) (bool
 	}
 	var in respEventIn
 	if err := json.Unmarshal([]byte(data), &in); err != nil {
-		return true, nil
+		return false, noRetry(fmt.Errorf("openai-responses SSE 数据不是合法 JSON：%w", err))
 	}
 	kind := in.Type
 	if kind == "" {
@@ -279,68 +311,64 @@ func (c *openaiResponses) handleFrame(p *pump, ev sseEvent, st *respState) (bool
 
 	switch kind {
 	case "response.output_text.delta":
+		st.text += in.Delta
 		if in.Delta != "" && !p.send(StreamEvent{Kind: EvText, Text: in.Delta}) {
 			return false, nil
 		}
 	case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
+		st.thinking += in.Delta
 		if in.Delta != "" && !p.send(StreamEvent{Kind: EvThinking, Text: in.Delta}) {
 			return false, nil
 		}
 	case "response.output_item.added":
-		if in.Item != nil && in.Item.Type == "function_call" {
-			ref, isNew := st.ensure(in.Item)
-			if isNew && !p.send(StreamEvent{Kind: EvToolStart, Index: ref.index, ID: ref.callID, Name: in.Item.Name}) {
-				return false, nil
-			}
-			if in.Item.Arguments != "" && !p.send(StreamEvent{Kind: EvToolDelta, Index: ref.index, ID: ref.callID, Text: in.Item.Arguments}) {
-				return false, nil
-			}
+		if err := st.toolSnapshot(p, in.Item); err != nil {
+			return false, err
 		}
 	case "response.function_call_arguments.delta":
 		if in.Delta != "" {
 			ref, ok := st.lookup(in.ItemID)
 			if !ok {
 				// 没见过 added（部分网关省略），先补一个 start，name 只能留空由 done 补。
-				ref = respToolRef{index: st.next, callID: in.ItemID}
-				st.next++
-				st.byItem[in.ItemID] = ref
+				ref = st.ensure(&respItemIn{ID: in.ItemID})
 				if !p.send(StreamEvent{Kind: EvToolStart, Index: ref.index, ID: ref.callID}) {
 					return false, nil
 				}
 			}
+			ref.args += in.Delta
 			if !p.send(StreamEvent{Kind: EvToolDelta, Index: ref.index, ID: ref.callID, Text: in.Delta}) {
 				return false, nil
 			}
 		}
+	case "response.function_call_arguments.done":
+		if ref, ok := st.lookup(in.ItemID); ok && in.Arguments != ref.args {
+			ref.args = in.Arguments
+			p.send(StreamEvent{Kind: EvToolDelta, Index: ref.index, ID: ref.callID, Text: ref.args, Replace: true})
+		}
 	case "response.output_item.done":
-		// done 事件带完整 arguments；若之前没有 added（某些网关省略），这里补发 start + 全量参数。
-		if in.Item != nil && in.Item.Type == "function_call" {
-			ref, isNew := st.ensure(in.Item)
-			if isNew {
-				if !p.send(StreamEvent{Kind: EvToolStart, Index: ref.index, ID: ref.callID, Name: in.Item.Name}) {
-					return false, nil
-				}
-				if in.Item.Arguments != "" && !p.send(StreamEvent{Kind: EvToolDelta, Index: ref.index, ID: ref.callID, Text: in.Item.Arguments}) {
-					return false, nil
-				}
-			}
+		if len(in.Item) > 0 {
+			st.items = append(st.items, in.Item)
 		}
-	case "response.completed", "response.incomplete":
-		if in.Response != nil {
-			if in.Response.Usage != nil {
-				p.send(StreamEvent{Kind: EvUsage, Usage: usageFromResp(in.Response.Usage)})
-			}
-			if in.Response.Error != nil && in.Response.Error.Message != "" {
-				return false, fmt.Errorf("openai-responses 流式错误：%s", truncateRunes(in.Response.Error.Message, errCharLimit))
-			}
+		if err := st.toolSnapshot(p, in.Item); err != nil {
+			return false, err
 		}
+	case "response.completed", "response.incomplete", "response.failed":
+		if in.Response == nil {
+			return false, noRetry(fmt.Errorf("openai-responses %s 缺少 response", kind))
+		}
+		if in.Response.Usage != nil {
+			p.send(StreamEvent{Kind: EvUsage, Usage: usageFromResp(in.Response.Usage)})
+		}
+		if err := in.Response.checkStatus(kind); err != nil {
+			return false, err
+		}
+		if in.Response.Output != nil {
+			st.items = in.Response.Output
+		}
+		if err := st.finishOutput(p); err != nil {
+			return false, err
+		}
+		st.completed = true
 		return false, nil
-	case "response.failed":
-		msg := "响应失败"
-		if in.Response != nil && in.Response.Error != nil && in.Response.Error.Message != "" {
-			msg = in.Response.Error.Message
-		}
-		return false, fmt.Errorf("openai-responses 流式错误：%s", truncateRunes(msg, errCharLimit))
 	case "error":
 		msg := in.Message
 		if msg == "" && in.Error != nil {
@@ -349,7 +377,11 @@ func (c *openaiResponses) handleFrame(p *pump, ev sseEvent, st *respState) (bool
 		if msg == "" {
 			msg = "未知错误"
 		}
-		return false, fmt.Errorf("openai-responses 流式错误：%s", truncateRunes(msg, errCharLimit))
+		code := ""
+		if in.Error != nil {
+			code = in.Error.Code
+		}
+		return false, remoteError("openai-responses", code, msg)
 	}
 	return true, nil
 }
@@ -374,6 +406,12 @@ func usageFromResp(u *respUsageIn) *Usage {
 		InputTokens:     u.InputTokens,
 		OutputTokens:    u.OutputTokens,
 		CacheReadTokens: cached,
-		TotalTokens:     total,
+		CacheWriteTokens: func() int {
+			if u.InputTokensDetails != nil {
+				return u.InputTokensDetails.CacheWriteTokens
+			}
+			return 0
+		}(),
+		TotalTokens: total,
 	}
 }

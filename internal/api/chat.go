@@ -13,7 +13,6 @@ import (
 	"svg-master/internal/agent"
 	"svg-master/internal/config"
 	"svg-master/internal/llm"
-	"svg-master/internal/project"
 	"svg-master/internal/svg"
 )
 
@@ -42,6 +41,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		Provider  string              `json:"providerId"`
 		Thinking  string              `json:"thinking"`
 		Session   string              `json:"session"`
+		RunID     string              `json:"runId"`
 		Layer     string              `json:"layer"`     // 前端当前选中的图层（可选，仅作提示）
 		GenMode   string              `json:"genMode"`   // 生成方式：quick / layers / anim；空则回落到设置值
 		MultiStep *bool               `json:"multiStep"` // 旧字段，genMode 缺失时用它推断
@@ -102,7 +102,6 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if session == "" {
 		session = "s" + randomID()
 	}
-	history := s.sessionHistory()
 
 	// 生成方式：请求体显式携带时以请求为准（前端开关即时生效，不用等设置写完存盘）；
 	// 只带旧字段 multiStep 时按它推断，保持对旧前端的兼容。
@@ -134,33 +133,42 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
 	var writeMu sync.Mutex
+	writeFrame := func(frame string) {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		if ctx.Err() != nil {
+			return
+		}
+		if _, err := fmt.Fprint(w, frame); err != nil {
+			cancel()
+			return
+		}
+		if err := http.NewResponseController(w).Flush(); err != nil {
+			cancel()
+		}
+	}
 	send := func(v any) {
 		raw, err := json.Marshal(v)
 		if err != nil {
 			return
 		}
-		writeMu.Lock()
-		fmt.Fprintf(w, "data: %s\n\n", raw)
-		flusher.Flush()
-		writeMu.Unlock()
+		writeFrame(fmt.Sprintf("data: %s\n\n", raw))
 	}
 
-	// 图层改动即时落盘：工程模式下就是实时的，快速模式下攒在内存里，
+	// 图层改动即时落盘：工程模式落到用户目录，快速模式落到内置临时目录，
 	// 退出时再问用户是否另存为工程。
 	emit := func(ev agent.Event) {
+		if ctx.Err() != nil {
+			return
+		}
 		switch ev.Kind {
 		case agent.EvLayers:
-			if err := proj.Save(); err != nil {
-				// 落盘失败不打断生成，前端会通过 layers 事件看到实际状态。
-				_ = err
-			}
-			s.markDirty()
+			s.markDirty() // 内部会落盘
 		case agent.EvSVG:
 			if ev.SVG != "" {
 				_ = s.persistSVG(session, ev.SVG)
@@ -182,32 +190,44 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		LayerTools:       layerTools,
 		ContextClearedAt: s.contextClearedAt(),
 	})
-	handle := &engineHandle{Abort: eng.Abort}
+	// 直接取消请求 context，即便 Engine 尚未进入 Run 也能停止。
+	handle := &engineHandle{Abort: cancel, RunID: in.RunID, Done: make(chan struct{})}
 	s.mu.Lock()
+	if s.resetting || len(s.engines) > 0 {
+		s.mu.Unlock()
+		writeErr(w, http.StatusConflict, "上一个任务仍在结束，请稍后重试")
+		return
+	}
 	s.engines[session] = handle
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
-		delete(s.engines, session)
+		if s.engines[session] == handle {
+			delete(s.engines, session)
+		}
+		close(handle.Done)
 		s.mu.Unlock()
 	}()
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush() // 注册后立即发送响应头，停止不必等模型产生首条事件。
+	history := s.sessionHistory()
 
 	// SSE 心跳：15s 一次注释行，防止中间层断连
 	hb := time.NewTicker(15 * time.Second)
 	defer hb.Stop()
+	heartbeatDone := make(chan struct{})
 	go func() {
+		defer close(heartbeatDone)
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-hb.C:
-				writeMu.Lock()
-				fmt.Fprint(w, ": keepalive\n\n")
-				flusher.Flush()
-				writeMu.Unlock()
+				writeFrame(": keepalive\n\n")
 			}
 		}
 	}()
+	defer func() { cancel(); <-heartbeatDone }()
 
 	stats, err := eng.Run(ctx, agent.Task{
 		Prompt:  in.Prompt,
@@ -220,7 +240,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// 任务结束后把完整历史写回工程（工程模式下同时落盘）。
 	s.saveSession(eng.History())
 	if err != nil {
-		send(agent.Event{Kind: agent.EvError, Error: err.Error()})
+		send(agent.Event{Kind: agent.EvError, Error: err.Error(), Usage: &stats})
 		return
 	}
 	send(agent.Event{Kind: agent.EvDone, Usage: &stats, Session: session})
@@ -228,14 +248,22 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 // handleAbort 中止任务。
 func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "需要 POST")
+		return
+	}
 	var in struct {
 		Session string `json:"session"`
+		RunID   string `json:"runId"`
 	}
-	_ = readJSON(r, &in)
+	if err := readJSON(r, &in); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	s.mu.Lock()
 	h := s.engines[in.Session]
 	s.mu.Unlock()
-	if h == nil || h.Abort == nil {
+	if h == nil || h.Abort == nil || (in.RunID != "" && h.RunID != in.RunID) {
 		writeJSON(w, map[string]any{"ok": false, "msg": "没有运行中的任务"})
 		return
 	}
@@ -243,22 +271,46 @@ func (s *Server) handleAbort(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true})
 }
 
-// handleSessionDrop 清空对话上下文（前端「清空上下文」调用）。
-//
-// 只清历史，不动图层文件；若当前是快速模式的临时工程，再顺带把画板重置为空白层，
-// 让「清空上下文」后的下一轮从干净画板开始（工程模式保持原作品不动）。
+// handleSessionDrop 先停止任务，再清空当前作品和上下文，避免旧任务把内容写回来。
 func (s *Server) handleSessionDrop(w http.ResponseWriter, r *http.Request) {
-	if err := s.clearContext(); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "需要 POST")
 		return
 	}
-	reset := false
-	if p := s.Project(); p != nil && p.Kind() == project.KindQuick {
-		if err := p.ResetLayers(); err == nil {
-			reset = true
+	s.mu.Lock()
+	if s.resetting {
+		s.mu.Unlock()
+		writeErr(w, http.StatusConflict, "正在清空，请稍候")
+		return
+	}
+	s.resetting = true
+	var running []*engineHandle
+	for _, h := range s.engines {
+		running = append(running, h)
+	}
+	s.mu.Unlock()
+	defer func() { s.mu.Lock(); s.resetting = false; s.mu.Unlock() }()
+	for _, h := range running {
+		h.Abort()
+	}
+	waitCtx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	for _, h := range running {
+		select {
+		case <-h.Done:
+		case <-waitCtx.Done():
+			writeErr(w, http.StatusConflict, "任务尚未停止，未清空内容，请稍后重试")
+			return
 		}
 	}
-	writeJSON(w, map[string]any{"ok": true, "resetCanvas": reset})
+	if p := s.Project(); p != nil {
+		if err := p.ResetContent(); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		s.markDirty()
+	}
+	writeJSON(w, map[string]any{"ok": true, "resetCanvas": true, "project": s.snapshot()})
 }
 
 // handleContext 返回上下文状态（前端用量环轮询）。

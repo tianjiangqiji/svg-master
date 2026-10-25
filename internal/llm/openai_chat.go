@@ -184,7 +184,7 @@ func (c *openaiChat) url() string {
 func (c *openaiChat) Stream(ctx context.Context, req Request) (<-chan StreamEvent, error) {
 	body, err := c.buildBody(req)
 	if err != nil {
-		return nil, fmt.Errorf("编码 openai-chat 请求失败：%w", err)
+		return nil, noRetry(fmt.Errorf("编码 openai-chat 请求失败：%w", err))
 	}
 	headers := map[string]string{"Authorization": "Bearer " + c.key}
 	for k, v := range sessionHeaders(req.SessionID) {
@@ -200,8 +200,8 @@ func (c *openaiChat) Stream(ctx context.Context, req Request) (<-chan StreamEven
 	}
 
 	// 非流式：网关不支持 SSE 时（StreamDisabled），一次性 JSON 解码后回放成事件。
-	if !req.Stream {
-		raw, err := nonStreamBody(resp.Body)
+	if !req.Stream || strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "application/json") {
+		raw, err := nonStreamBody(resp.Body, d.t.IdleTimeout)
 		if err != nil {
 			return nil, err
 		}
@@ -213,7 +213,20 @@ func (c *openaiChat) Stream(ctx context.Context, req Request) (<-chan StreamEven
 		defer close(ch)
 		p := newPump(ctx, ch, resp.Body, d.t.IdleTimeout)
 		started := map[int]bool{}
-		p.run(func(ev sseEvent) (bool, error) { return c.handleFrame(p, ev, started) })
+		finished := false
+		p.endCheck = func() error {
+			if !finished && !p.terminated {
+				return fmt.Errorf("openai-chat 流在 finish_reason 前结束，响应不完整")
+			}
+			return nil
+		}
+		p.run(func(ev sseEvent) (bool, error) {
+			var chunk chatChunkIn
+			if json.Unmarshal([]byte(ev.Data), &chunk) == nil && len(chunk.Choices) > 0 && chunk.Choices[0].FinishReason != nil {
+				finished = true
+			}
+			return c.handleFrame(p, ev, started)
+		})
 	}()
 	return ch, nil
 }
@@ -233,6 +246,7 @@ type chatChunkIn struct {
 		Index int `json:"index"`
 		Delta struct {
 			Content          string `json:"content"`
+			Refusal          string `json:"refusal"`
 			ReasoningContent string `json:"reasoning_content"`
 			Reasoning        string `json:"reasoning"`
 			ToolCalls        []struct {
@@ -262,15 +276,28 @@ func (c *openaiChat) handleFrame(p *pump, ev sseEvent, started map[int]bool) (bo
 	}
 	var chunk chatChunkIn
 	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-		return true, nil // 忽略无法解析的保活帧
+		return false, noRetry(fmt.Errorf("解析 openai-chat SSE 失败：%w", err))
 	}
 	if chunk.Error != nil && chunk.Error.Message != "" {
-		return false, fmt.Errorf("openai-chat 流式错误：%s", truncateRunes(chunk.Error.Message, errCharLimit))
+		code := chunk.Error.Type
+		if chunk.Error.Code != nil {
+			code = fmt.Sprint(chunk.Error.Code)
+		}
+		return false, remoteError("openai-chat", code, chunk.Error.Message)
 	}
 	if u := chunk.Usage; u != nil {
 		p.send(StreamEvent{Kind: EvUsage, Usage: usageFromChat(u)})
 	}
 	for _, ch0 := range chunk.Choices {
+		if ch0.Index != 0 {
+			continue
+		}
+		if ch0.FinishReason != nil && (*ch0.FinishReason == "length" || *ch0.FinishReason == "content_filter") {
+			return false, stopReasonError("openai-chat", *ch0.FinishReason)
+		}
+		if ch0.Delta.Refusal != "" {
+			return false, remoteError("openai-chat", "refusal", ch0.Delta.Refusal)
+		}
 		if s := ch0.Delta.ReasoningContent; s != "" {
 			if !p.send(StreamEvent{Kind: EvThinking, Text: s}) {
 				return false, nil
@@ -287,14 +314,14 @@ func (c *openaiChat) handleFrame(p *pump, ev sseEvent, started map[int]bool) (bo
 		}
 		for _, tc := range ch0.Delta.ToolCalls {
 			idx := tc.Index
-			if !started[idx] {
+			if !started[idx] || tc.ID != "" || tc.Function.Name != "" {
 				started[idx] = true
 				if !p.send(StreamEvent{Kind: EvToolStart, Index: idx, ID: tc.ID, Name: tc.Function.Name}) {
 					return false, nil
 				}
 			}
 			if tc.Function.Arguments != "" {
-				if !p.send(StreamEvent{Kind: EvToolDelta, Index: idx, ID: tc.ID, Text: tc.Function.Arguments}) {
+				if !p.send(StreamEvent{Kind: EvToolDelta, Index: idx, ID: tc.ID, Name: tc.Function.Name, Text: tc.Function.Arguments}) {
 					return false, nil
 				}
 			}
@@ -352,7 +379,7 @@ func hasVersionSuffix(base string) bool {
 // usesMaxCompletionTokens 判断模型是否只接受 max_completion_tokens。
 func usesMaxCompletionTokens(model string) bool {
 	m := strings.ToLower(model)
-	if strings.Contains(m, "gpt-5") {
+	if strings.Contains(m, "gpt-5") || strings.Contains(m, "gpt-6") {
 		return true
 	}
 	if len(m) > 1 && m[0] == 'o' && m[1] >= '1' && m[1] <= '4' {

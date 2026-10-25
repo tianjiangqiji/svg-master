@@ -59,11 +59,10 @@ func Run(opts Options) error {
 		select {}
 	}
 
-	// 关闭窗口前：快速模式下若工程有改动，请前端提示「保存为工程 / 直接丢弃」。
+	// 关闭窗口前：询问由前端完成（窗口过程拦 WM_CLOSE 后调 window.dshSaveChoice），
+	// 这里只做兜底——快速模式还有未保存改动就先留一份快照，然后放行退出。
 	onClose := func() {
-		if srv.NeedsSavePrompt() {
-			srv.RequestSaveChoice(8 * time.Second)
-		}
+		srv.BackupQuickOnExit()
 	}
 	return runWindow(opts, url, onClose)
 }

@@ -48,21 +48,24 @@ type doer struct {
 	c *http.Client
 }
 
+// 所有轮次共用连接池，避免每次工具回传重新建连。
+var sharedHTTPTransport = &http.Transport{
+	Proxy:                 http.ProxyFromEnvironment,
+	ForceAttemptHTTP2:     true,
+	MaxIdleConns:          32,
+	MaxIdleConnsPerHost:   8,
+	IdleConnTimeout:       90 * time.Second,
+	TLSHandshakeTimeout:   30 * time.Second,
+	ExpectContinueTimeout: time.Second,
+}
+
 func newDoer(t Transport) *doer {
 	nt := normalizeTransport(t)
 	return &doer{
 		t: nt,
 		// 不设 http.Client.Timeout：它会把整个流式响应算进总超时。
 		// 首字节超时由 do() 里的 AfterFunc 取消实现。
-		c: &http.Client{Transport: &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
-			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          32,
-			MaxIdleConnsPerHost:   8,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   30 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-		}},
+		c: &http.Client{Transport: sharedHTTPTransport},
 	}
 }
 
@@ -131,7 +134,7 @@ func (d *doer) do(ctx context.Context, build func() (*http.Request, error)) (*ht
 			return nil, serr
 		}
 	}
-	return nil, lastErr
+	return nil, noRetry(lastErr)
 }
 
 func retryableStatus(code int) bool {
@@ -214,7 +217,8 @@ func httpError(prefix string, resp *http.Response) error {
 	if status == "" {
 		status = http.StatusText(resp.StatusCode)
 	}
-	return fmt.Errorf("%s：HTTP %d %s，响应体：%s", prefix, resp.StatusCode, status, body)
+	// HTTP 层已完成可重试状态码的退避，Agent 不再把同一预算乘一次。
+	return noRetry(fmt.Errorf("%s：HTTP %d %s，响应体：%s", prefix, resp.StatusCode, status, body))
 }
 
 // truncateRunes 按字符截断，避免切碎 UTF-8。
@@ -239,8 +243,9 @@ type sseEvent struct {
 
 // sseReader 逐帧读取 SSE；支持 `event:` / `data:` / 注释行 / `[DONE]`。
 type sseReader struct {
-	sc *bufio.Scanner
-	wd *idleWatchdog
+	sc   *bufio.Scanner
+	wd   *idleWatchdog
+	done bool
 }
 
 func newSSEReader(body io.ReadCloser, idle time.Duration) *sseReader {
@@ -259,6 +264,7 @@ func (r *sseReader) Next() (sseEvent, bool, error) {
 		}
 		out := sseEvent{Event: name, Data: strings.Join(data, "\n")}
 		if strings.TrimSpace(out.Data) == "[DONE]" {
+			r.done = true
 			return sseEvent{}, false, nil
 		}
 		return out, true, nil
@@ -267,7 +273,7 @@ func (r *sseReader) Next() (sseEvent, bool, error) {
 		r.wd.reset()
 		line := strings.TrimSuffix(r.sc.Text(), "\r")
 		if line == "" {
-			if ev, ok, err := flush(); ok || err != nil {
+			if ev, ok, err := flush(); ok || err != nil || r.done {
 				return ev, ok, err
 			}
 			data = data[:0]
@@ -371,10 +377,12 @@ func (w *idleWatchdog) fired() bool {
 
 // pump 把一个 SSE body 泵成 StreamEvent；负责 ctx 取消、看门狗、channel 关闭。
 type pump struct {
-	ctx  context.Context
-	ch   chan<- StreamEvent
-	body io.ReadCloser
-	idle time.Duration
+	ctx        context.Context
+	ch         chan<- StreamEvent
+	body       io.ReadCloser
+	idle       time.Duration
+	endCheck   func() error
+	terminated bool
 }
 
 func newPump(ctx context.Context, ch chan<- StreamEvent, body io.ReadCloser, idle time.Duration) *pump {
@@ -414,10 +422,11 @@ func (p *pump) run(handle func(sseEvent) (bool, error)) {
 			if p.ctx.Err() != nil {
 				return
 			}
-			p.send(StreamEvent{Kind: EvError, Err: "读取流式响应失败：" + err.Error()})
+			p.send(StreamEvent{Kind: EvError, Err: "读取流式响应失败：" + err.Error(), Cause: err})
 			return
 		}
 		if !ok {
+			p.terminated = rd.done
 			break
 		}
 		cont, herr := handle(ev)
@@ -425,11 +434,17 @@ func (p *pump) run(handle func(sseEvent) (bool, error)) {
 			if p.ctx.Err() != nil {
 				return
 			}
-			p.send(StreamEvent{Kind: EvError, Err: herr.Error()})
+			p.send(StreamEvent{Kind: EvError, Err: herr.Error(), Cause: herr})
 			return
 		}
 		if !cont {
 			break
+		}
+	}
+	if p.endCheck != nil {
+		if err := p.endCheck(); err != nil {
+			p.send(StreamEvent{Kind: EvError, Err: err.Error(), Cause: err})
+			return
 		}
 	}
 	p.send(StreamEvent{Kind: EvDone})

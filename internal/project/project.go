@@ -66,9 +66,10 @@ type Layer struct {
 // MessageRecord 持久化的对话消息。复用 llm.Block 的 JSON 形状，
 // 完整保留工具调用与工具结果，才能跨启动续聊。
 type MessageRecord struct {
-	Role   string      `json:"role"`
-	Blocks []llm.Block `json:"blocks"`
-	Time   int64       `json:"time,omitempty"`
+	Role         string            `json:"role"`
+	Blocks       []llm.Block       `json:"blocks"`
+	Time         int64             `json:"time,omitempty"`
+	NativeOutput *llm.NativeOutput `json:"nativeOutput,omitempty"`
 }
 
 // File 工程文档（project.json 的顶层结构）。
@@ -648,17 +649,19 @@ func (p *Project) DeleteLayer(id string) error {
 }
 
 // ResetLayers 把工程清成一张空白画板：删掉所有图层文件，只留一个空图层。
-// 快速模式的「清空上下文」会顺带调用，让下一轮从干净起点开始。
 func (p *Project) ResetLayers() error {
+	return p.resetLayers(false)
+}
+
+// ResetContent 清空当前作品的全部图层内容、对话及续传状态，保留工程和画布规格。
+func (p *Project) ResetContent() error {
+	return p.resetLayers(true)
+}
+
+func (p *Project) resetLayers(clearHistory bool) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for _, l := range p.file.Layers {
-		if l.File != "" {
-			_ = os.Remove(filepath.Join(p.dir, "layers", l.File))
-		}
-	}
-	p.file.Layers = nil
-	p.file.ActiveLayer = ""
+	previous := p.file
 	now := time.Now().UnixNano()
 	l := Layer{
 		ID:      newLayerID(),
@@ -675,7 +678,22 @@ func (p *Project) ResetLayers() error {
 	}
 	p.file.Layers = []Layer{l}
 	p.file.ActiveLayer = l.ID
-	return p.saveLocked()
+	if clearHistory {
+		p.file.History = nil
+		p.file.ContextCleared = 0
+		p.file.Notes = ""
+	}
+	if err := p.saveLocked(); err != nil {
+		p.file = previous
+		_ = os.Remove(filepath.Join(p.dir, "layers", l.File))
+		return err
+	}
+	for _, old := range previous.Layers {
+		if old.File != "" && filepath.Base(old.File) == old.File {
+			_ = os.Remove(filepath.Join(p.dir, "layers", old.File))
+		}
+	}
+	return nil
 }
 
 // Reorder 按给定 id 顺序重排层级（数组顺序 = 从下到上）。
@@ -811,7 +829,7 @@ func (p *Project) History() []llm.Message {
 	defer p.mu.Unlock()
 	out := make([]llm.Message, 0, len(p.file.History))
 	for _, r := range p.file.History {
-		out = append(out, llm.Message{Role: r.Role, Blocks: r.Blocks})
+		out = append(out, llm.Message{Role: r.Role, Blocks: r.Blocks, NativeOutput: r.NativeOutput})
 	}
 	return out
 }
@@ -823,7 +841,7 @@ func (p *Project) SetHistory(msgs []llm.Message) error {
 	recs := make([]MessageRecord, 0, len(msgs))
 	now := time.Now().UnixNano()
 	for _, m := range msgs {
-		recs = append(recs, MessageRecord{Role: m.Role, Blocks: m.Blocks, Time: now})
+		recs = append(recs, MessageRecord{Role: m.Role, Blocks: m.Blocks, Time: now, NativeOutput: m.NativeOutput})
 	}
 	p.file.History = recs
 	return p.saveLocked()

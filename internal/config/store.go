@@ -231,10 +231,12 @@ func Normalize(in Settings, prev Settings) (Settings, error) {
 			p.Protocol = ProtoOpenAIChat
 		}
 		meta, _ := MetaOf(p.Protocol)
-		if strings.TrimSpace(p.BaseURL) == "" {
-			p.BaseURL = meta.BaseURL
+		// Base URL 不再要求用户手写 /v1：这里统一归一（补协议、削斜杠、按协议补版本段）。
+		// 空值回落到协议默认值。
+		p.BaseURL = CanonicalBaseURL(p.Protocol, p.BaseURL)
+		if p.BaseURL == "" {
+			p.BaseURL = strings.TrimRight(meta.BaseURL, "/")
 		}
-		p.BaseURL = strings.TrimRight(strings.TrimSpace(p.BaseURL), "/")
 		if !strings.HasPrefix(p.BaseURL, "http://") && !strings.HasPrefix(p.BaseURL, "https://") {
 			return out, fmt.Errorf("供应商 %q 的 Base URL 必须以 http:// 或 https:// 开头", p.Name)
 		}

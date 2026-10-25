@@ -43,7 +43,9 @@ func FetchRemoteModels(protocol, baseURL, apiKey string, t Transport) ([]config.
 		url = geminiModelsURL(base)
 		headers["x-goog-api-key"] = apiKey
 	default:
-		url = strings.TrimRight(base, "/") + "/models"
+		// OpenAI 系：base 可以只写到域名（不带 /v1），这里按与聊天端点相同的
+		// 规则补版本段，避免用户填 https://api.xxx.com 时请求打到 /models。
+		url = apiURL(base, "models", "/v1")
 		headers["Authorization"] = "Bearer " + apiKey
 	}
 
@@ -355,4 +357,10 @@ func NormalizeBaseURL(protocol, base string) string {
 		return b
 	}
 	return b + "/v1beta"
+}
+
+// CanonicalBaseURL 返回可持久化的 Base URL 形态（前端「不再必填 /v1」的落点）。
+// 具体规则见 config.CanonicalBaseURL。
+func CanonicalBaseURL(protocol, base string) string {
+	return config.CanonicalBaseURL(protocol, base)
 }

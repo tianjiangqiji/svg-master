@@ -49,8 +49,8 @@ type geminiFuncResp struct {
 }
 
 type geminiContentOut struct {
-	Role  string          `json:"role,omitempty"`
-	Parts []geminiPartOut `json:"parts"`
+	Role  string `json:"role,omitempty"`
+	Parts any    `json:"parts"`
 }
 
 type geminiToolOut struct {
@@ -137,6 +137,9 @@ func (c *geminiClient) buildBody(req Request) ([]byte, error) {
 //   - functionResponse.name 必须是函数名，response 是对象（{output} 或 {error}）；
 //   - 模型主版本 ≥3 时 functionCall / functionResponse 都要带 id。
 func encodeGeminiMessage(m Message, names map[string]string, withID bool) ([]geminiContentOut, error) {
+	if m.Role == RoleAssistant && m.NativeOutput != nil && m.NativeOutput.Protocol == config.ProtoGemini && len(m.NativeOutput.Items) > 0 {
+		return []geminiContentOut{{Role: "model", Parts: m.NativeOutput.Items}}, nil
+	}
 	role := "user"
 	if m.Role == RoleAssistant {
 		role = "model"
@@ -311,25 +314,30 @@ func hasSurrogate(s string) bool {
 	return false
 }
 
-func (c *geminiClient) url(model string) string {
+func (c *geminiClient) url(model string, stream bool) string {
 	base := strings.TrimRight(c.base, "/")
 	if !strings.HasSuffix(base, "/v1beta") {
 		base += "/v1beta"
 	}
-	return base + "/models/" + url.PathEscape(model) + ":streamGenerateContent?alt=sse&key=" + url.QueryEscape(c.key)
+	model = strings.TrimPrefix(model, "models/")
+	method, query := "generateContent", "?key="
+	if stream {
+		method, query = "streamGenerateContent", "?alt=sse&key="
+	}
+	return base + "/models/" + url.PathEscape(model) + ":" + method + query + url.QueryEscape(c.key)
 }
 
 func (c *geminiClient) Stream(ctx context.Context, req Request) (<-chan StreamEvent, error) {
 	body, err := c.buildBody(req)
 	if err != nil {
-		return nil, fmt.Errorf("编码 gemini 请求失败：%w", err)
+		return nil, noRetry(fmt.Errorf("编码 gemini 请求失败：%w", err))
 	}
 	headers := map[string]string{"x-goog-api-key": c.key}
 	for k, v := range sessionHeaders(req.SessionID) {
 		headers[k] = v
 	}
 	d := newDoer(c.t)
-	resp, err := d.postJSON(ctx, c.url(req.Model), headers, body)
+	resp, err := d.postJSON(ctx, c.url(req.Model, req.Stream), headers, body)
 	if err != nil {
 		return nil, err
 	}
@@ -337,12 +345,12 @@ func (c *geminiClient) Stream(ctx context.Context, req Request) (<-chan StreamEv
 		return nil, httpError("gemini 请求失败", resp)
 	}
 
-	if !req.Stream {
-		raw, err := nonStreamBody(resp.Body)
+	if !req.Stream || strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "application/json") {
+		raw, err := nonStreamBody(resp.Body, d.t.IdleTimeout)
 		if err != nil {
 			return nil, err
 		}
-		return eventsChan(ctx, c.decodeNonStream(raw)), nil
+		return eventsChan(ctx, c.decodeNonStream(raw, req.Model)), nil
 	}
 
 	ch := make(chan StreamEvent, 64)
@@ -350,7 +358,20 @@ func (c *geminiClient) Stream(ctx context.Context, req Request) (<-chan StreamEv
 		defer close(ch)
 		p := newPump(ctx, ch, resp.Body, d.t.IdleTimeout)
 		next := 0
-		p.run(func(ev sseEvent) (bool, error) { return c.handleFrame(p, ev, &next) })
+		output := &geminiOutputState{withID: geminiNeedsToolID(req.Model)}
+		p.endCheck = func() error {
+			if !output.completed {
+				return fmt.Errorf("gemini 流在 finishReason 前结束，响应不完整")
+			}
+			output.emit(p)
+			return nil
+		}
+		p.run(func(ev sseEvent) (bool, error) {
+			if err := output.capture(ev); err != nil {
+				return false, err
+			}
+			return c.handleFrame(p, ev, &next)
+		})
 	}()
 	return ch, nil
 }
@@ -396,13 +417,13 @@ func (c *geminiClient) handleFrame(p *pump, ev sseEvent, next *int) (bool, error
 	}
 	var in geminiResponseIn
 	if err := json.Unmarshal([]byte(data), &in); err != nil {
-		return true, nil
+		return false, noRetry(fmt.Errorf("解析 gemini SSE 失败：%w", err))
 	}
 	if in.Error != nil && in.Error.Message != "" {
-		return false, fmt.Errorf("gemini 流式错误（HTTP %d）：%s", in.Error.Code, truncateRunes(in.Error.Message, errCharLimit))
+		return false, remoteError("gemini", fmt.Sprint(in.Error.Code), in.Error.Message)
 	}
 	if in.PromptFeedback != nil && in.PromptFeedback.BlockReason != "" {
-		return false, fmt.Errorf("gemini 拒绝生成：%s", in.PromptFeedback.BlockReason)
+		return false, stopReasonError("gemini", in.PromptFeedback.BlockReason)
 	}
 	if u := in.UsageMetadata; u != nil {
 		total := u.TotalTokenCount
@@ -416,7 +437,13 @@ func (c *geminiClient) handleFrame(p *pump, ev sseEvent, next *int) (bool, error
 			TotalTokens:     total,
 		}})
 	}
-	for _, cand := range in.Candidates {
+	for i, cand := range in.Candidates {
+		if i > 0 {
+			break
+		}
+		if cand.FinishReason != "" && cand.FinishReason != "STOP" {
+			return false, stopReasonError("gemini", cand.FinishReason)
+		}
 		for _, part := range cand.Content.Parts {
 			switch {
 			case part.FunctionCall != nil:
@@ -424,7 +451,7 @@ func (c *geminiClient) handleFrame(p *pump, ev sseEvent, next *int) (bool, error
 				*next++
 				id := part.FunctionCall.ID
 				if id == "" {
-					id = geminiToolID("", part.FunctionCall.Name)
+					id = geminiGeneratedID(idx, part.FunctionCall.Name)
 				}
 				if !p.send(StreamEvent{Kind: EvToolStart, Index: idx, ID: id, Name: part.FunctionCall.Name}) {
 					return false, nil

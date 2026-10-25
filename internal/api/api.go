@@ -21,19 +21,22 @@ var webFS embed.FS
 
 // Server 本地 HTTP 服务。
 type Server struct {
-	store   *config.Store
-	token   string
-	ln      net.Listener
-	srv     *http.Server
-	mu      sync.Mutex
-	engines map[string]*engineHandle // session -> 正在运行的任务
-	proj    projectState             // 当前打开的工程（单例）
-	desktop bool                     // 内置窗口模式：可以调系统文件夹选择器
+	store     *config.Store
+	token     string
+	ln        net.Listener
+	srv       *http.Server
+	mu        sync.Mutex
+	engines   map[string]*engineHandle // session -> 正在运行的任务
+	resetting bool
+	proj      projectState // 当前打开的工程（单例）
+	desktop   bool         // 内置窗口模式：可以调系统文件夹选择器
 }
 
 // engineHandle 一个运行中的任务句柄（具体类型由 api 内部使用）。
 type engineHandle struct {
 	Abort func()
+	RunID string
+	Done  chan struct{}
 }
 
 // New 创建服务并绑定随机端口。

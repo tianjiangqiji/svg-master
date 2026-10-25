@@ -130,6 +130,12 @@
     svg: '',             // 当前 SVG 文本
     canvas: null,        // 当前画布预设
     running: false,
+    clearing: false,
+    stopping: false,       // 已发出中止请求，等流断开
+    runSeq: 0,             // 每次运行 +1：旧的 SSE 回调据此自我作废
+    streamReader: null,    // 当前 SSE reader，停止时直接 cancel
+    streamAbort: null,
+    runID: '',
     session: '',
     mode: 'continue',     // 对话模式：历史已落在工程里，始终连续
     liveSession: '',
@@ -234,6 +240,8 @@
 
   // ── 弹窗通用（开合都带 120–160ms 过渡） ────────────────
   const modalTimers = new Map();
+  // 启动时「选择打开方式」是必答题：选完之前不允许被遮罩点击 / ESC / resize 弄没。
+  let bootPickOpen = false;
   function openModal(id) {
     const m = $(id);
     if (!m) return;
@@ -254,9 +262,11 @@
     m.classList.add('hidden');
     m.classList.remove('closing', 'opening');
   }
-  function closeModal(id) {
+  function closeModal(id, force) {
     const m = $(id);
     if (!m) return;
+    // 启动选择窗是必答题，只有真正选完（force）才允许关
+    if (id === 'modalProject' && bootPickOpen && !force) return;
     // 正在 openModal 的两帧过渡里（.opening 未撤）就直接关：撤定时器、立即隐藏，
     // 否则那两帧回调会把 .opening 去掉，弹窗卡在半透明不可交互的状态里。
     if (m.classList.contains('opening') || m.classList.contains('hidden')) {
@@ -275,7 +285,13 @@
       const m = b.closest('.modal');
       if (!m) return;
       // 退出询问弹窗：取消按钮要回执给 chooseExit（否则窗口一直等）。
-      if (m.id === 'modalConfirm') document.dispatchEvent(new CustomEvent('dsh-confirm-cancel'));
+      // 顺序很关键：必须先关自己再回执。回执里可能立刻弹出下一层确认框，
+      // 反过来的话，回执弹窗刚 openModal 就会被这里的 closeModal 一把关掉。
+      if (m.id === 'modalConfirm') {
+        closeModal(m.id);
+        document.dispatchEvent(new CustomEvent('dsh-confirm-cancel'));
+        return;
+      }
       closeModal(m.id);
     });
   });
@@ -315,6 +331,60 @@
     $('leftToggle').classList.toggle('collapsed', collapsed);
     requestAnimationFrame(recomputeFit);
   });
+
+  // ── 右栏区块折叠（四块都能折，Agent 默认折叠） ──────────
+  // 状态存在 localStorage：重开窗口保持上次的布局习惯。
+  const RBLOCKS = ['blkUsage', 'layerBlock', 'blkAgent', 'blkRaw'];
+  const RBLOCK_DEFAULT = { blkUsage: false, layerBlock: false, blkAgent: true, blkRaw: false };
+  function rblockState() {
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem('svg.rblocks') || 'null'); } catch { saved = null; }
+    const out = Object.assign({}, RBLOCK_DEFAULT);
+    if (saved && typeof saved === 'object') {
+      RBLOCKS.forEach((id) => { if (typeof saved[id] === 'boolean') out[id] = saved[id]; });
+    }
+    return out;
+  }
+  function applyRBlock(id, collapsed) {
+    const blk = $(id);
+    if (!blk) return;
+    blk.classList.toggle('collapsed', !!collapsed);
+    const chev = blk.querySelector('.rhead .rchev');
+    if (chev) chev.textContent = collapsed ? '▸' : '▾';
+    const head = blk.querySelector('.rhead');
+    if (head) head.title = collapsed ? '点击展开' : '点击折叠';
+  }
+  function setRBlock(id, collapsed, save) {
+    applyRBlock(id, collapsed);
+    if (save !== false) {
+      const st = rblockState();
+      st[id] = !!collapsed;
+      try { localStorage.setItem('svg.rblocks', JSON.stringify(st)); } catch { /* 忽略 */ }
+    }
+    // 折叠会改变画布可用高度 → 重新适配
+    requestAnimationFrame(recomputeFit);
+  }
+  function initRBlocks() {
+    const st = rblockState();
+    RBLOCKS.forEach((id) => applyRBlock(id, st[id]));
+  }
+  document.querySelectorAll('#right .rhead[data-rblock]').forEach((head) => {
+    head.addEventListener('click', (e) => {
+      // 标题栏上的小按钮（新建图层等）不触发折叠
+      if (e.target.closest('button')) return;
+      const id = head.dataset.rblock;
+      const blk = $(id);
+      if (!blk) return;
+      setRBlock(id, !blk.classList.contains('collapsed'));
+    });
+  });
+  initRBlocks();
+
+  // 「模型输出」整块的滚动目标（内容 + 底部工具条同一个滚动区）
+  function flowScrollEl() {
+    const blk = $('blkRaw');
+    return (blk && blk.querySelector(':scope > .rbody')) || $('flowBody');
+  }
 
   // ── 启动 ────────────────────────────────────────────────
   async function boot() {
@@ -1189,17 +1259,29 @@
     S.panY = 0;
     applyTransform();
   });
-  window.addEventListener('resize', debounce(() => { recomputeFit(); }, 120));
+  window.addEventListener('resize', debounce(() => {
+    recomputeFit();
+    // 启动选择窗必答：窗口尺寸变化把弹窗挤掉（首帧重排 / 误触关闭）就补回来
+    if (!bootPickOpen) return;
+    const m = $('modalProject');
+    if (!m) return;
+    if (m.classList.contains('hidden')) openModal('modalProject');
+    else m.classList.remove('opening');
+  }, 120));
   if (window.ResizeObserver) new ResizeObserver(() => { recomputeFit(); }).observe(scrollEl);
 
   // ── 校验 ────────────────────────────────────────────────
   const scheduleValidate = debounce(async () => {
     if (!S.svg) return;
+    const seq = S.runSeq;
+    const source = S.svg;
     try {
-      const rep = await api('/api/validate', { method: 'POST', body: { svg: S.svg } });
+      const rep = await api('/api/validate', { method: 'POST', body: { svg: source } });
+      if (seq !== S.runSeq || source !== S.svg) return;
       renderReport(rep);
       if (S.codeOpen) renderReport(rep, 'codeIssues');
     } catch (e) {
+      if (seq !== S.runSeq || source !== S.svg) return;
       $('issues').innerHTML = '';
       $('issues').appendChild(el('div', 'issue error', '校验失败：' + e.message));
       if (S.codeOpen) {
@@ -1392,71 +1474,166 @@
     if (n) scheduleFlow();
     return n;
   }
-  function renderFlow() {
+  // 模型输出的渲染状态。流式期间只重画最后一段：整块重建会把滚动位置打回顶部，
+  // 这正是「自动滚动失灵、手动滚动被拽回」的根因。
+  const flowRS = { count: -1, lastFolded: undefined };
+
+  // 距底部 tol 像素内算「贴底」——只有贴底时才跟随新内容
+  function nearBottom(sc, tol) {
+    if (!sc) return true;
+    return sc.scrollHeight - sc.scrollTop - sc.clientHeight <= (tol == null ? 24 : tol);
+  }
+
+  function fillSegBody(pre, seg) {
+    if (seg.role === 'err') { pre.textContent = seg.text; return; }
+    pre.innerHTML = '';
+    pre.appendChild(renderMarkdown(seg.text));
+  }
+
+  // 造一段（思维链 / 正文 / 错误）。展开态思维链自带限高滚动条，位置记在 seg 上。
+  function flowSegNode(seg, i) {
+    const meta = ROLE_META[seg.role] || ROLE_META.text;
+    const wrap = el('div', 'fseg ' + meta.cls);
+    wrap.dataset.i = String(i);
+    if (seg.role === 'think' && seg.folded) wrap.classList.add('folded');
+    const head = el('div', 'fseg-head');
+    head.appendChild(el('span', 'fh-label', meta.label));
+    if (seg.text.length > 40) head.appendChild(el('span', 'fh-cnt', seg.text.length + ' 字'));
+    if (meta.foldable) {
+      const f = el('span', 'fh-fold', seg.folded ? '▸' : '▾');
+      f.title = seg.folded ? '展开思维链' : '折叠思维链';
+      f.addEventListener('click', (e) => {
+        e.stopPropagation();
+        seg.folded = !seg.folded;
+        renderFlow(true); // 折叠态变了：必须整块重排
+      });
+      head.appendChild(f);
+    }
+    wrap.appendChild(head);
+    if (meta.foldable && seg.folded) {
+      head.addEventListener('click', () => { seg.folded = false; renderFlow(true); });
+      head.title = '展开思维链';
+    }
+    const pre = el('div', 'fseg-body md');
+    fillSegBody(pre, seg);
+    // 记下用户是否把这条思维链滚到了底部：只有贴底才继续跟随
+    if (seg._pinned === undefined) seg._pinned = true;
+    pre.addEventListener('scroll', () => {
+      seg._bodyTop = pre.scrollTop;
+      seg._pinned = nearBottom(pre, 8);
+    });
+    wrap.appendChild(pre);
+    return wrap;
+  }
+
+  function renderFlow(force) {
     const box = $('flowBody');
     if (!box) return;
+    const sc = flowScrollEl();
+    const auto = !$('flowAuto') || $('flowAuto').checked;
+    const wasNear = nearBottom(sc);
+    const prevTop = sc ? sc.scrollTop : 0;
+
     if (!S.flow.length) {
       box.innerHTML = '';
       box.appendChild(el('div', 'flow-empty', '（尚无输出）'));
-      const m = $('rawMeta');
-      if (m) m.textContent = '0 字';
+      flowRS.count = 0;
+      const m0 = $('rawMeta');
+      if (m0) m0.textContent = '0 字';
       return;
     }
-    const frag = document.createDocumentFragment();
-    S.flow.forEach((seg, i) => {
-      const meta = ROLE_META[seg.role] || ROLE_META.text;
-      const wrap = el('div', 'fseg ' + meta.cls);
-      if (seg.role === 'think' && seg.folded) wrap.classList.add('folded');
-      // 头部：标签 + 字数 + （思维链的）折叠箭头
-      const head = el('div', 'fseg-head');
-      head.appendChild(el('span', 'fh-label', meta.label));
-      if (seg.text.length > 40) head.appendChild(el('span', 'fh-cnt', seg.text.length + ' 字'));
-      if (meta.foldable) {
-        const f = el('span', 'fh-fold', seg.folded ? '▸' : '▾');
-        f.title = seg.folded ? '展开思维链' : '折叠思维链';
-        f.addEventListener('click', (e) => {
-          e.stopPropagation();
-          seg.folded = !seg.folded;
-          renderFlow();
-        });
-        head.appendChild(f);
+
+    const last = S.flow[S.flow.length - 1];
+    const canPatch = !force
+      && flowRS.count === S.flow.length
+      && flowRS.lastFolded === last.folded
+      && box.querySelectorAll(':scope > .fseg').length === S.flow.length;
+    if (canPatch) {
+      // 增量：原地换掉最后一段的正文，其余段不动，滚动位置天然保住
+      const node = box.querySelector(':scope > .fseg:last-child');
+      if (node) {
+        const pre = node.querySelector(':scope > .fseg-body');
+        const head = node.querySelector(':scope > .fseg-head');
+        if (pre) fillSegBody(pre, last);
+        if (head) {
+          let cnt = head.querySelector('.fh-cnt');
+          if (last.text.length > 40) {
+            if (!cnt) {
+              cnt = el('span', 'fh-cnt', '');
+              head.insertBefore(cnt, head.querySelector('.fh-fold'));
+            }
+            cnt.textContent = last.text.length + ' 字';
+          } else if (cnt) {
+            cnt.remove();
+          }
+        }
+        if (pre && last.role === 'think' && !last.folded) {
+          // 思维链自带限高滚动条：贴底就跟随，否则回到用户原来的位置
+          if (auto && last._pinned !== false) pre.scrollTop = pre.scrollHeight;
+          else if (last._bodyTop) pre.scrollTop = last._bodyTop;
+        }
       }
-      wrap.appendChild(head);
-      if (meta.foldable && seg.folded) {
-        // 折叠态：头部整条可点开
-        head.addEventListener('click', () => { seg.folded = false; renderFlow(); });
-        head.title = '展开思维链';
-      }
-      const pre = el('div', 'fseg-body md');
-      if (seg.role === 'err') pre.textContent = seg.text;
-      else pre.appendChild(renderMarkdown(seg.text));
-      wrap.appendChild(pre);
-      frag.appendChild(wrap);
-    });
-    box.innerHTML = '';
-    box.appendChild(frag);
+    } else {
+      box.innerHTML = '';
+      const frag = document.createDocumentFragment();
+      S.flow.forEach((seg, i) => frag.appendChild(flowSegNode(seg, i)));
+      box.appendChild(frag);
+      // 挂载后恢复各思维链自己的滚动位置（挂载前写 scrollTop 是空操作）
+      box.querySelectorAll(':scope > .fseg-think:not(.folded) > .fseg-body').forEach((b) => {
+        const seg = S.flow[Number(b.parentNode.dataset.i)];
+        if (seg && seg._bodyTop) b.scrollTop = seg._bodyTop;
+      });
+    }
+
+    flowRS.count = S.flow.length;
+    flowRS.lastFolded = last.folded;
+
     const m = $('rawMeta');
     if (m) {
       const n = S.rawText.length + S.thinkText.length + S.errText.length;
       m.textContent = `${S.flow.length} 段 · ${n} 字`;
     }
-    if (!$('flowAuto') || $('flowAuto').checked) box.scrollTop = box.scrollHeight;
+
+    // 滚动策略：勾了「自动滚动」且原本就贴底 → 跟随最新；否则原地不动（用户在看历史）
+    if (sc) sc.scrollTop = (auto && wasNear) ? sc.scrollHeight : prevTop;
+    if (!canPatch && auto && wasNear) {
+      box.querySelectorAll(':scope > .fseg-think:not(.folded) > .fseg-body').forEach((b) => {
+        b.scrollTop = b.scrollHeight;
+      });
+    }
   }
-  let flowRaf = 0;
+  let flowTimer = 0;
   function scheduleFlow() {
-    if (flowRaf) return;
-    flowRaf = requestAnimationFrame(() => { flowRaf = 0; renderFlow(); });
+    if (flowTimer) return;
+    // 48ms 合并：流式 token 到达远比这密集，每帧重排会把滚动挤得来回跳
+    flowTimer = setTimeout(() => {
+      flowTimer = 0;
+      requestAnimationFrame(() => renderFlow());
+    }, 48);
+  }
+  // 勾回「自动滚动」时立刻贴底（取消勾选不打断当前阅读位置）
+  if ($('flowAuto')) {
+    $('flowAuto').addEventListener('change', () => {
+      if (!$('flowAuto').checked) return;
+      const sc = flowScrollEl();
+      if (sc) sc.scrollTop = sc.scrollHeight;
+      $('flowBody').querySelectorAll(':scope > .fseg-think:not(.folded) > .fseg-body')
+        .forEach((b) => { b.scrollTop = b.scrollHeight; });
+    });
   }
   $('btnClearRaw').addEventListener('click', () => {
     S.flow = [];
     S.rawText = '';
     S.thinkText = '';
     S.errText = '';
-    renderFlow();
+    renderFlow(true);
   });
   // 出错时滚到右栏最底部（错误段总在末尾），不切页签
   function showRawTab() {
-    const box = $('flowBody');
+    // 折叠状态下先展开，否则用户看不到错误
+    const blk = $('blkRaw');
+    if (blk && blk.classList.contains('collapsed')) setRBlock('blkRaw', false);
+    const box = flowScrollEl();
     if (box) box.scrollTop = box.scrollHeight;
     scheduleFlow();
   }
@@ -1592,6 +1769,7 @@
         break;
       }
       case 'error': {
+        if (ev.usage) updateUsage(ev.usage);
         const msg = ev.error || ev.text || '未知错误';
         addLog('ERROR', msg);   // addLog 内部已把错误写进 S.errText，不再重复追加
         pushFlow('err', msg);
@@ -1611,7 +1789,7 @@
     updateBadge();
     const folded = foldThinking();
     if (folded) addLog('LOG', `已自动折叠 ${folded} 段思维链`);
-    renderFlow();
+    renderFlow(true);
     if (S.svg) scheduleValidate();
   }
   // ── 工程 / 图层（对话历史属于工程，不再有「新建/连续」二选一） ──
@@ -2311,8 +2489,10 @@
 
   // 刷新工程快照（模型改过图层后调用）
   async function refreshProject() {
+    const seq = S.runSeq;
     try {
       const r = await api('/api/layers');
+      if (seq !== S.runSeq) return;
       applyProject(r, { keepCanvas: true });
     } catch { /* 工程可能尚未打开 */ }
   }
@@ -2468,6 +2648,9 @@
   function openProjectModal(opts) {
     if (!S.settings) return;
     const boot = !!(opts && opts.boot);
+    bootPickOpen = boot;
+    const m = $('modalProject');
+    if (m) m.dataset.noClose = boot ? '1' : ''; // 遮罩点击不关，必须先选一项
     const title = $('projTitle');
     if (title) title.textContent = boot ? '选择打开方式' : '工程';
     const closeBtn = $('projClose');
@@ -2512,7 +2695,8 @@
       const r = await api(path, { method: 'POST', body });
       if (r && r.project) applyProject(r.project);
       addLog('LOG', note || '工程已更新');
-      closeModal('modalProject');
+      bootPickOpen = false;
+      closeModal('modalProject', true);
       closeModal('modalNewProj');
       await loadProjectMeta();
       // 换了工程就解锁生成方式：新工程的会话是新的，切换资格也该重置。
@@ -2550,7 +2734,8 @@
       }
     };
     if (blank) {
-      closeModal('modalProject');
+      bootPickOpen = false;
+      closeModal('modalProject', true);
       go();
       return;
     }
@@ -2634,10 +2819,34 @@
       b.textContent = '开始生成';
       b.title = '开始生成（Ctrl+Enter）';
     }
-    b.disabled = false;
+    b.disabled = S.clearing;
+    // 停止阶段：按钮进入「正在停止」，任何点击都直接再打一次 abort。
+    b.classList.toggle('stopping', !!on && S.stopping);
+    if (on && S.stopping) {
+      b.textContent = '正在停止…';
+      b.title = '已发出中止请求，正在断开流';
+    }
+  }
+  // 立即切到「已停止」：不等后端回执，先把 UI 与本地状态收干净。
+  // 后端的 abort 是 context.Cancel，流会随即结束；剩下的 SSE 帧全部丢弃。
+  function haltRunLocal() {
+    S.running = false;
+    S.stopping = false;
+    S.runSeq++;
+    if (S.streamAbort) {
+      S.streamAbort.abort();
+      S.streamAbort = null;
+    }
+    if (S.streamReader) {
+      try { S.streamReader.cancel().catch(() => {}); } catch { /* 忽略 */ }
+      S.streamReader = null;
+    }
+    setRunningUI(false);
+    updateBadge();
   }
   async function startRun() {
-    if (S.running) return;
+    if (S.running || S.clearing) return;
+    const pendingSeq = S.runSeq;
     if (!S.settings) { toast('设置尚未加载', true); return; }
     syncInputsToSettings();
     const prompt = $('prompt').value.trim();
@@ -2660,8 +2869,14 @@
       toast('设置保存失败：' + e.message, true);
       return;
     }
+    if (S.running || S.clearing || pendingSeq !== S.runSeq) return;
 
     S.running = true;
+    const controller = new AbortController();
+    S.streamAbort = controller;
+    S.runID = 'r' + rand();
+    S.stopping = false;
+    const seq = ++S.runSeq;
     // 一旦开始生成就锁定生成方式：当前若停在快速模式，还留最后一次切换机会。
     genLock();
     // 快速模式：工程目录是临时的，开新会话前丢掉上一轮上下文。
@@ -2691,6 +2906,7 @@
       providerId: p.id,
       thinking: selValue('thinkingSel') || 'off',
       session: S.session,
+      runId: S.runID,
       layer: S.pickedLayer || '',
       genMode: S.genMode,
       multiStep: S.genMode === 'layers',
@@ -2701,6 +2917,7 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-App-Token': TOKEN },
         body: JSON.stringify(body),
+        signal: controller.signal,
       });
       if (!res.ok) {
         const ct = res.headers.get('content-type') || '';
@@ -2714,21 +2931,30 @@
       if (!res.body) throw new Error('当前浏览器不支持流式读取');
 
       const reader = res.body.getReader();
+      if (seq !== S.runSeq) { await reader.cancel(); return; }
+      S.streamReader = reader;
       const dec = new TextDecoder();
       let buf = '';
       let finished = false;
+      // seq 变了说明用户点了停止（或又开了新一轮）：这个循环立刻作废，不再碰 UI。
+      const stale = () => seq !== S.runSeq;
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done || stale()) break;
         buf += dec.decode(value, { stream: true });
         buf = buf.replace(/\r\n/g, '\n');
         let idx;
         while ((idx = buf.indexOf('\n\n')) >= 0) {
           const frame = buf.slice(0, idx);
           buf = buf.slice(idx + 2);
+          if (stale()) break;
           handleFrame(frame);
         }
+        if (stale()) break;
       }
+      if (S.streamReader === reader) S.streamReader = null;
+      // 用户主动停止：已由 haltRunLocal 收尾，这里不再报「连接意外结束」。
+      if (stale()) return;
       if (buf.trim()) handleFrame(buf);
       if (!finished && S.running) {
         finishRun('ERROR', '连接意外结束');
@@ -2747,20 +2973,36 @@
         }
       }
     } catch (e) {
+      if (seq !== S.runSeq) return; // 已停止，错误无意义
       addLog('ERROR', '请求失败：' + e.message);
       finishRun('ERROR', '请求失败');
       showRawTab('err');
+    } finally {
+      if (S.streamAbort === controller) S.streamAbort = null;
     }
   }
 
-  async function stopRun() {
+  // 立即切断：先把前端收干净（按钮/流/状态），再异步通知后端。
+  // 后端 Abort 是 context.Cancel，SSE 会随即断；前端不再等它。
+  function stopRunNow() {
     if (!S.running) return;
-    addLog('LOG', '请求中止 …');
-    try {
-      await api('/api/chat/abort', { method: 'POST', body: { session: S.session } });
-    } catch (e) {
-      addLog('ERROR', '中止失败：' + e.message);
-    }
+    const session = S.session;
+    const runId = S.runID;
+    S.stopping = true;
+    haltRunLocal();
+    const stoppedSeq = S.runSeq;
+    addLog('LOG', '已中止生成');
+    toast('已中止生成');
+    // 不 await：网络慢也不该卡住界面。
+    api('/api/chat/abort', { method: 'POST', body: { session, runId } })
+      .then((r) => { if (stoppedSeq === S.runSeq && (!r || r.ok === false)) addLog('LOG', '后端已无运行中的任务'); })
+      .catch((e) => { if (stoppedSeq === S.runSeq) addLog('ERROR', '中止通知失败：' + e.message); });
+  }
+
+  // 停止是即时取消，保留已有作品。
+  function stopRun() {
+    if (!S.running) { setRunningUI(false); return; }
+    stopRunNow();
   }
 
   $('btnRun').addEventListener('click', () => { if (S.running) stopRun(); else startRun(); });
@@ -2946,36 +3188,44 @@
     // 取消按钮沿用 modalConfirm 里已有的 data-close 行为，这里补一层钩子。
     document.addEventListener('dsh-confirm-cancel', onCancel);
   }
-  // ── 清空上下文（只清对话历史，不动工程文件） ─────────────
+  // ── 清空全部：停止任务、重置作品及对话、清空本地显示 ─────
   $('btnClear').addEventListener('click', () => {
+    if (S.clearing) return;
     confirmBox({
-      title: '清空上下文',
+      title: '清空全部',
       icon: '!',
-      text: '只清空这次对话的上下文（模型将忘记之前聊过什么）。图层与工程文件不受影响。',
-      ok: '清空上下文',
+      text: '将停止当前生成，并清空画布、全部图层内容、对话上下文、日志、原始输出和已加载图片。',
+      ok: '清空全部',
       onOk: async () => {
+        S.clearing = true;
         try {
-          await api('/api/session/drop', { method: 'POST', body: { session: S.session || '' } });
+          if (S.running) stopRunNow();
+          haltRunLocal();
+          const result = await api('/api/session/drop', { method: 'POST', body: { session: S.session || '' } });
+          haltRunLocal();
+          if (result && result.project) applyProject(result.project, { keepCanvas: true });
         } catch (e) {
+          S.clearing = false;
+          setRunningUI(S.running);
           toast('清空失败：' + e.message, true);
           return;
         }
         S.session = '';
-        S.rawText = '';
-        S.thinkText = '';
-        S.errText = '';
-        S.flow = [];
+        S.liveSession = '';
+        S.runID = '';
         S.images = [];
-        S.folds.clear();
-        S.codeLines = [];
-        S.lastReport = null;
+        $('prompt').value = '';
+        previewSVG = '';
+        S.livePreview = false;
+        resetWorkspaceView();
+        genUnlock();
+        updateUsage({});
         renderThumbs();
-        renderFlow();
-        renderCode();
         $('bigLog').innerHTML = '';
+        S.clearing = false;
         setRunningUI(false);
-        addLog('LOG', '已清空对话上下文（工程未被清理）');
-        toast('已清空上下文');
+        updateBadge();
+        toast('已清空全部内容与上下文');
       },
     });
   });
@@ -3251,6 +3501,25 @@
   $('pfModelInput').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); addModelId($('pfModelInput').value); $('pfModelInput').value = ''; }
   });
+  $('btnClearModels').addEventListener('click', () => {
+    if (!P.draft) return;
+    const n = (P.draft.models || []).length;
+    if (!n) { toast('当前没有备选模型'); return; }
+    confirmBox({
+      title: '清空备选模型',
+      icon: '!',
+      text: `将移除「${P.draft.name}」下的 ${n} 个备选模型（能力配置一并清除），供应商本身保留。`,
+      ok: '清空',
+      onOk: () => {
+        P.draft.models = [];
+        P.draft.modelCaps = {};
+        renderProvModels();
+        renderCapsTable();
+        $('provHint').textContent = `已清空 ${n} 个备选模型`;
+        toast('已清空备选模型');
+      },
+    });
+  });
   $('btnFetchProv').addEventListener('click', async () => {
     if (!P.draft) return;
     const b = $('btnFetchProv');
@@ -3266,8 +3535,11 @@
           apiKey: $('pfKey').value.trim(),
         },
       });
+      const fetched = r.models || [];
       let added = 0;
-      (r.models || []).forEach((m) => {
+      const liveIds = new Set();
+      fetched.forEach((m) => {
+        liveIds.add(m.id);
         if (!P.draft.models.some((x) => x.id === m.id)) { P.draft.models.push({ id: m.id, name: m.name || m.id }); added++; }
         if (m.caps) {
           P.draft.modelCaps[m.id] = {
@@ -3280,8 +3552,32 @@
       });
       renderProvModels();
       renderCapsTable();
-      $('provHint').textContent = `拉取 ${(r.models || []).length} 个模型，新增 ${added} 个`;
+      $('provHint').textContent = `拉取 ${fetched.length} 个模型，新增 ${added} 个`;
       toast(`新增 ${added} 个模型`);
+      // 接口没返回的备选模型视为已失效（下架/改名），问一句是否删掉。
+      const stale = (P.draft.models || []).filter((m) => !liveIds.has(m.id));
+      if (fetched.length && stale.length) {
+        const names = stale.map((m) => m.id);
+        const shown = names.slice(0, 6).join('、') + (names.length > 6 ? ` 等 ${names.length} 个` : '');
+        confirmBox({
+          title: '发现已失效模型',
+          icon: '?',
+          text: `本次拉取未返回 ${stale.length} 个已配置模型：${shown}。是否从备选列表删除它们？（保留则仍可手动选用）`,
+          ok: '删除失效模型',
+          onOk: () => {
+            const dead = new Set(names);
+            P.draft.models = P.draft.models.filter((m) => !dead.has(m.id));
+            dead.forEach((id) => { delete P.draft.modelCaps[id]; });
+            renderProvModels();
+            renderCapsTable();
+            $('provHint').textContent = `已删除 ${dead.size} 个失效模型`;
+            toast(`已删除 ${dead.size} 个失效模型`);
+          },
+          onCancel: () => {
+            $('provHint').textContent = `保留 ${stale.length} 个未返回模型`;
+          },
+        });
+      }
     } catch (e) {
       $('provHint').textContent = '拉取失败：' + e.message;
       toast('拉取失败：' + e.message, true);
