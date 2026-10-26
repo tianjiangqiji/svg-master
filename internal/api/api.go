@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"svg-master/internal/codex"
 	"svg-master/internal/config"
 )
 
@@ -21,6 +22,7 @@ var webFS embed.FS
 
 // Server 本地 HTTP 服务。
 type Server struct {
+	codex     *codex.Manager
 	store     *config.Store
 	token     string
 	ln        net.Listener
@@ -46,6 +48,7 @@ func New(store *config.Store, port int) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{
+		codex:   codex.New(store.Dir()),
 		store:   store,
 		token:   hex.EncodeToString(tok),
 		engines: map[string]*engineHandle{},
@@ -83,7 +86,7 @@ func (s *Server) Serve() error {
 }
 
 // Close 关闭服务。
-func (s *Server) Close() error { return s.srv.Close() }
+func (s *Server) Close() error { s.codex.Close(); return s.srv.Close() }
 
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
@@ -118,6 +121,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/state", s.handleState)
 	mux.HandleFunc("/api/settings", s.handleSettings)
 	mux.HandleFunc("/api/providers", s.handleProviders)
+	mux.HandleFunc("/api/chatgpt/", s.handleChatGPT)
 	mux.HandleFunc("/api/models", s.handleModels)
 	mux.HandleFunc("/api/protocols", s.handleProtocols)
 	mux.HandleFunc("/api/prompts", s.handlePrompts)
