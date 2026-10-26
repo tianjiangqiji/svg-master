@@ -600,14 +600,30 @@ input[type=checkbox]{accent-color:var(--accent);width:13px;height:13px;margin:0;
 .kv{display:flex;justify-content:space-between;gap:8px;font-size:11px;color:var(--muted);padding:2px 0;flex:0 0 auto}
 .kv > span:first-child{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .kv b{flex:0 0 auto;color:var(--text2);font-family:var(--mono);font-weight:500;white-space:nowrap}
-.quota .rbody{gap:6px}
-.quota .kv{font-size:12px}
-.quota .meter{margin:4px 0 6px}
-.quota-message{font-size:12px;line-height:1.5;margin:0;color:var(--muted);overflow-wrap:anywhere}
+/* ── 底栏：订阅额度（单行，横向排布） ─────────────────── */
+.bottombar{
+  flex:0 0 auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  min-height:34px;padding:4px 10px;
+  background:var(--panel);border-top:1px solid var(--border);
+  font-size:11px;color:var(--muted);
+}
+.bottombar .bb-label{flex:0 0 auto;letter-spacing:.4px;text-transform:uppercase}
+.bottombar .bb-plan{flex:0 0 auto;color:var(--text);font-family:var(--mono);font-weight:500}
+.bottombar .bb-details{display:flex;align-items:center;gap:8px;min-width:0;flex:0 1 auto}
+.bottombar .bb-kv{display:flex;align-items:baseline;gap:5px;white-space:nowrap;flex:0 0 auto}
+.bottombar .bb-kv b{color:var(--text2);font-family:var(--mono);font-weight:500}
+.bottombar .bb-reset{color:var(--muted)}
+.bb-meter{display:block;width:96px;flex:0 0 96px}
+.quota-message{font-size:11px;line-height:1.4;margin:0;color:var(--muted);overflow-wrap:anywhere;min-width:0}
 .quota-message:empty{display:none}
-.quota-actions{display:flex;gap:6px;flex-wrap:wrap}
-.quota-actions .mini{min-height:28px;padding:4px 8px}
-.quota-note{font-size:11px;line-height:1.5}
+.quota-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;flex:0 0 auto}
+.quota-actions .mini{min-height:22px;padding:1px 8px;font-size:11px}
+.quota-note{font-size:10.5px;line-height:1.4;flex:0 1 auto;min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:240px}
+@media (max-width:1200px){
+  .quota-note{max-width:150px}
+  .bb-meter{width:70px;flex-basis:70px}
+}
 .agent-body{padding-top:2px}
 .agent-body .fld:last-child{margin-bottom:0}
 

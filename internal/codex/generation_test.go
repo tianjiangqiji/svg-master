@@ -131,12 +131,15 @@ func TestGenerationToolRoundTripAndHistory(t *testing.T) {
 	}
 	req.Messages = append(req.Messages, llm.Message{Role: llm.RoleTool, Blocks: []llm.Block{{Type: llm.BlockToolResult, ToolResult: &llm.ToolResult{CallID: callID, Content: "Fix invalid SVG", IsError: true}}}})
 	events = collect(t, c, req)
-	var lastUsage int
+	// 线程累计快照会被多次推送：本 pump 起始快照是 110（上一轮留下的 a.usage），
+	// 随后 200、205。增量必须逐次前移，所以各事件之和应等于 205−110=95，
+	// 而不是把中间快照重复计入（那会得到 90+95=185）。
+	var usageSum int
 	done, tier := false, false
 	for _, e := range events {
 		switch e.Kind {
 		case llm.EvUsage:
-			lastUsage = e.Usage.TotalTokens
+			usageSum += e.Usage.TotalTokens
 		case llm.EvDone:
 			done = true
 		case llm.EvServiceTier:
@@ -146,8 +149,8 @@ func TestGenerationToolRoundTripAndHistory(t *testing.T) {
 			}
 		}
 	}
-	if !done || !tier || lastUsage != 95 {
-		t.Fatalf("completion/usage mismatch: %+v", events)
+	if !done || !tier || usageSum != 95 {
+		t.Fatalf("completion/usage mismatch (sum=%d, want 95): %+v", usageSum, events)
 	}
 	_ = c.Close()
 	var state map[string]bool

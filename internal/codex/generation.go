@@ -187,7 +187,9 @@ func (a *ModelClient) begin(ctx context.Context, req llm.Request) error {
 
 func (a *ModelClient) pump(ctx context.Context, req llm.Request, ch chan<- llm.StreamEvent) {
 	defer close(ch)
-	baseline := a.usage
+	// prev 是「上一次已处理的线程累计快照」。每次 tokenUsage 通知后立刻前移，
+	// 否则同一 pump 内多次通知都会与同一个旧快照相减，把先前增量重复计入。
+	prev := a.usage
 	send := func(e llm.StreamEvent) bool {
 		if e.Kind == llm.EvError && e.Cause == nil {
 			e.Cause = llm.NoRetry(errors.New(e.Err))
@@ -245,8 +247,9 @@ func (a *ModelClient) pump(ctx context.Context, req llm.Request, ch chan<- llm.S
 				}
 			case "thread/tokenUsage/updated":
 				u := p.TokenUsage.Total
-				delta := llm.Usage{InputTokens: u.Input - baseline.InputTokens, OutputTokens: u.Output - baseline.OutputTokens, CacheReadTokens: u.Cached - baseline.CacheReadTokens, TotalTokens: u.Total - baseline.TotalTokens}
-				a.usage = llm.Usage{InputTokens: u.Input, OutputTokens: u.Output, CacheReadTokens: u.Cached, TotalTokens: u.Total}
+				delta := llm.Usage{InputTokens: u.Input - prev.InputTokens, OutputTokens: u.Output - prev.OutputTokens, CacheReadTokens: u.Cached - prev.CacheReadTokens, TotalTokens: u.Total - prev.TotalTokens}
+				prev = llm.Usage{InputTokens: u.Input, OutputTokens: u.Output, CacheReadTokens: u.Cached, TotalTokens: u.Total}
+				a.usage = prev
 				if !send(llm.StreamEvent{Kind: llm.EvUsage, Usage: &delta}) {
 					return
 				}
