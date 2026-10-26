@@ -227,6 +227,13 @@ func Normalize(in Settings, prev Settings) (Settings, error) {
 			p.ID = fmt.Sprintf("p%d", time.Now().UnixNano()+int64(i))
 		}
 		seen[p.ID] = true
+		if p.AuthMode == "chatgpt" {
+			p.Protocol = ProtoOpenAIResp
+			p.BaseURL = "https://api.openai.com/v1"
+			p.APIKey = ""
+		} else {
+			p.AuthMode = ""
+		}
 		if _, ok := MetaOf(p.Protocol); !ok {
 			p.Protocol = ProtoOpenAIChat
 		}

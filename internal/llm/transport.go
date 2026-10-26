@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"svg-master/internal/netproxy"
 )
 
 const (
@@ -50,7 +52,7 @@ type doer struct {
 
 // 所有轮次共用连接池，避免每次工具回传重新建连。
 var sharedHTTPTransport = &http.Transport{
-	Proxy:                 http.ProxyFromEnvironment,
+	Proxy:                 netproxy.Proxy,
 	ForceAttemptHTTP2:     true,
 	MaxIdleConns:          32,
 	MaxIdleConnsPerHost:   8,

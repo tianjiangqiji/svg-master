@@ -14,20 +14,21 @@ import (
 
 // EventKind Agent 下行事件类型（api 层直接转 SSE）。
 const (
-	EvLog       = "log"      // 普通日志（带 Level）
-	EvText      = "text"     // 模型正文增量
-	EvThinking  = "thinking" // 思考增量
-	EvToolStart = "tool_start"
-	EvToolDelta = "tool_delta" // 工具参数增量（当前用于 emit_svg 的实时预览）
-	EvToolEnd   = "tool_end"
-	EvSVG       = "svg" // 画布更新（完整 SVG）
-	EvCanvas    = "canvas"
-	EvLayers    = "layers" // 图层树更新（数组为 []LayerInfo）
-	EvUsage     = "usage"
-	EvNudge     = "nudge" // 上下文压缩提醒
-	EvAsk       = "ask"   // 需要用户澄清
-	EvDone      = "done"
-	EvError     = "error"
+	EvLog         = "log"      // 普通日志（带 Level）
+	EvText        = "text"     // 模型正文增量
+	EvThinking    = "thinking" // 思考增量
+	EvToolStart   = "tool_start"
+	EvToolDelta   = "tool_delta" // 工具参数增量（当前用于 emit_svg 的实时预览）
+	EvToolEnd     = "tool_end"
+	EvSVG         = "svg" // 画布更新（完整 SVG）
+	EvCanvas      = "canvas"
+	EvLayers      = "layers" // 图层树更新（数组为 []LayerInfo）
+	EvUsage       = "usage"
+	EvServiceTier = "service_tier"
+	EvNudge       = "nudge" // 上下文压缩提醒
+	EvAsk         = "ask"   // 需要用户澄清
+	EvDone        = "done"
+	EvError       = "error"
 )
 
 // Event Agent 推给上层的统一事件。
@@ -87,13 +88,14 @@ type Task struct {
 
 // Deps Agent 引擎的外部依赖。
 type Deps struct {
-	Client    llm.Client
-	Settings  config.AgentSettings
-	Canvas    config.CanvasPreset
-	Model     string
-	MaxTokens int
-	Thinking  string
-	Transport llm.Transport
+	Client      llm.Client
+	Settings    config.AgentSettings
+	Canvas      config.CanvasPreset
+	Model       string
+	MaxTokens   int
+	Thinking    string
+	ServiceTier string
+	Transport   llm.Transport
 
 	// Layers 图层工作区（工程文件夹）。为 nil 时一切退回「整幅 SVG」老行为：
 	// 不注入多步引导，也不下发图层读写工具。

@@ -332,10 +332,10 @@
     requestAnimationFrame(recomputeFit);
   });
 
-  // ── 右栏区块折叠（四块都能折，Agent 默认折叠） ──────────
+  // ── 右栏区块折叠（Agent 默认折叠） ─────────────────────
   // 状态存在 localStorage：重开窗口保持上次的布局习惯。
-  const RBLOCKS = ['blkUsage', 'layerBlock', 'blkAgent', 'blkRaw'];
-  const RBLOCK_DEFAULT = { blkUsage: false, layerBlock: false, blkAgent: true, blkRaw: false };
+  const RBLOCKS = ['blkUsage', 'blkQuota', 'layerBlock', 'blkAgent', 'blkRaw'];
+  const RBLOCK_DEFAULT = { blkUsage: false, blkQuota: false, layerBlock: false, blkAgent: true, blkRaw: false };
   function rblockState() {
     let saved = null;
     try { saved = JSON.parse(localStorage.getItem('svg.rblocks') || 'null'); } catch { saved = null; }
@@ -599,16 +599,18 @@
   }
 
   function updateBadge() {
+    syncQuotaProvider();
     const st = S.settings;
     const model = st?.activeModel || '';
     const p = activeProvider();
-    $('modelBadgeText').textContent = model ? displayModelName(model) : '未选择模型';
+    renderFastMode();
+    $('modelBadgeText').textContent = (p && p.authMode === 'chatgpt' ? 'ChatGPT 订阅 · ' : '') + (model ? displayModelName(model) : '未选择模型');
     $('modelBadge').title = model
       ? `${p ? p.name : ''} · ${displayModelName(model)}${displayModelName(model) !== model ? ` (${model})` : ''}（点击切换模型）`
       : '尚未选择模型（点击打开模型列表）';
     const dot = $('badgeDot');
     if (S.running) dot.className = 'dot busy';
-    else if (model && p && p.apiKey) dot.className = 'dot ok';
+    else if (model && p && (p.apiKey || p.authMode === 'chatgpt')) dot.className = 'dot ok';
     else dot.className = 'dot idle';
   }
 
@@ -760,6 +762,23 @@
   });
 
   // ── 保存设置（防抖，可强制 flush） ──────────────────────
+  function fastModeAvailable() {
+    const p = activeProvider();
+    return !!p && p.protocol === 'openai-responses';
+  }
+  function renderFastMode() {
+    const available = fastModeAvailable();
+    $('fastModeField').classList.toggle('hidden', !available);
+    $('fastMode').checked = !!S.settings?.fastMode;
+    $('fastMode').disabled = S.running || !available;
+    if (!S.settings?.fastMode) $('fastModeStatus').textContent = '';
+  }
+  $('fastMode').addEventListener('change', () => {
+    if (!S.settings || S.running) return;
+    S.settings.fastMode = $('fastMode').checked;
+    $('fastModeStatus').textContent = S.settings.fastMode ? '下次生成将请求 Fast 加速' : '';
+    persist();
+  });
   let persistTimer = 0;
   let persistPending = false;
   async function persistNow() {
@@ -790,6 +809,7 @@
     const st = S.settings;
     if (!st) return;
     st.thinking = selValue('thinkingSel') || st.thinking;
+    st.fastMode = $('fastMode').checked;
     if (st.agent) {
       st.agent.maxSteps = clamp(parseInt($('maxSteps').value, 10) || st.agent.maxSteps || 40, 1, 200);
       st.agent.autoValidate = $('autoValidate').checked;
@@ -1759,6 +1779,13 @@
       case 'layers': if (Array.isArray(ev.layers)) { S.project = S.project || {}; S.project.layers = ev.layers; renderLayers(); } break;
       case 'tool_end': toolEnd(ev); break;
       case 'usage': updateUsage(ev.usage); break;
+      case 'service_tier':
+        if (S.settings?.fastMode && fastModeAvailable()) {
+          const tier = ev.text || '';
+          $('fastModeStatus').textContent = (tier === 'priority' || tier === 'fast') ? '本轮已使用 Fast 加速'
+            : tier === 'default' ? '本轮按标准档位处理（已请求 Fast）' : '已请求 Fast，服务端未确认加速档位';
+        }
+        break;
       case 'nudge': addLog('NUDGE', ev.text || '上下文接近上限，建议压缩'); break;
       case 'ask': askCard(ev); break;
       case 'done': {
@@ -1783,6 +1810,7 @@
   }
 
   function finishRun(level, note) {
+    refreshQuota();
     S.running = false;
     setRunningUI(false); // 有会话时按钮是「发送」，否则是「开始生成」
     addLog(level === 'ERROR' ? 'ERROR' : 'DONE', note || '结束');
@@ -2804,6 +2832,7 @@
 
   // ── 开始 / 停止（单按钮切换） ───────────────────────────
   function setRunningUI(on) {
+    $('fastMode').disabled = !!on || !fastModeAvailable();
     const b = $('btnRun');
     if (!b) return;
     b.classList.toggle('running', !!on);
@@ -2855,7 +2884,7 @@
     if (!p) { toast('没有可用供应商', true); return; }
     const model = (S.settings.activeModel || '').trim();
     if (!model) { toast('请先在右上角选择模型', true); return; }
-    if (!p.apiKey) { toast('该供应商还没有填写 API Key', true); return; }
+    if (!p.apiKey && p.authMode !== 'chatgpt') { toast('该供应商还没有填写 API Key', true); return; }
     if (!S.canvas) { toast('请选择比例预设', true); return; }
     if (!S.project || !S.project.open) {
       toast('请先选择打开方式（快速生成 / 新建项目 / 打开项目）', true);
@@ -2896,6 +2925,10 @@
     setRunningUI(true);
     updateBadge();
     addLog('LOG', `开始生成 · ${p.name} / ${model} · ${S.canvas.name}`);
+    if (S.settings.fastMode && fastModeAvailable()) {
+      $('fastModeStatus').textContent = '已请求 Fast，等待服务端确认…';
+      addLog('LOG', '已请求 Fast 加速；可能增加额度或费用消耗');
+    }
     if (S.images.length) addLog('LOG', `附带 ${S.images.length} 张图片`);
 
     const body = {
@@ -2905,6 +2938,7 @@
       model,
       providerId: p.id,
       thinking: selValue('thinkingSel') || 'off',
+      fastMode: !!S.settings.fastMode && fastModeAvailable(),
       session: S.session,
       runId: S.runID,
       layer: S.pickedLayer || '',
@@ -3323,8 +3357,174 @@
     b.textContent = pm ? '保存工程' : '保存';
   }
 
+  // ── 订阅额度：与生成使用同一个 Codex 登录 ────────────────
+  const Q = { id: '', seq: 0, timer: 0, loading: false, data: null };
+  function quotaPath(action = '') {
+    return '/api/chatgpt/' + (action ? action.replace(/^\//, '') : 'quota') + '?providerId=' + encodeURIComponent(Q.id);
+  }
+  function syncQuotaProvider() {
+    const p = activeProvider();
+    const id = p?.authMode === 'chatgpt' ? p.id : '';
+    $('blkQuota').classList.toggle('hidden', !id);
+    if (Q.id === id) return;
+    clearTimeout(Q.timer);
+    Q.id = id; Q.seq++; Q.data = null; Q.loading = false;
+    renderQuota();
+    if (id) refreshQuota();
+  }
+  function renderQuota() {
+    const d = Q.data || {}, w = d.window;
+    const plan = d.planType === 'plus' ? 'Plus' : /^(?:prolite|pro(?:_.*)?)$/i.test(d.planType || '') ? 'Pro' : 'ChatGPT';
+    $('quotaPlan').textContent = plan + (d.period ? ' · ' + d.period : '');
+    $('quotaPlan').title = d.email ? 'Codex 账号：' + d.email : '';
+    const valid = !!w && typeof w.usedPercent === 'number' && w.usedPercent >= 0 && w.usedPercent <= 100;
+    $('quotaDetails').classList.toggle('hidden', !valid);
+    if (valid) {
+      const remaining = 100 - w.usedPercent;
+      const pct = new Intl.NumberFormat('zh-CN', {maximumFractionDigits: 1}).format(remaining);
+      $('quotaPeriod').textContent = d.period + ' 剩余';
+      $('quotaRemaining').textContent = pct + '%';
+      $('quotaBar').style.width = remaining + '%';
+      $('quotaBar').style.background = remaining <= 10 ? 'var(--err)' : remaining <= 30 ? 'var(--warn)' : 'var(--ok)';
+      $('quotaMeter').setAttribute('aria-valuenow', String(remaining));
+      $('quotaMeter').setAttribute('aria-valuetext', d.period + ' 剩余 ' + pct + '%');
+      const reset = w.resetsAt ? new Date(w.resetsAt * 1000) : null;
+      $('quotaReset').textContent = reset ? reset.toLocaleString('zh-CN', {month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false}) : '暂未提供';
+      $('quotaReset').title = reset ? reset.toLocaleString() : '';
+    }
+    $('quotaMessage').textContent = d.pending ? '请在浏览器中完成 Codex 登录…' : d.message || (Q.loading && !Q.data ? '正在读取额度…' : '');
+    $('btnQuotaLogin').classList.toggle('hidden', !!d.connected || !!d.pending);
+    $('btnQuotaCancel').classList.toggle('hidden', !d.pending);
+    $('btnQuotaLogout').classList.toggle('hidden', !d.connected || !!d.pending);
+    $('btnQuotaRefresh').classList.toggle('hidden', !Q.data || !!d.pending);
+    for (const id of ['btnQuotaLogin', 'btnQuotaRefresh', 'btnQuotaLogout', 'btnQuotaCancel']) $(id).disabled = Q.loading;
+    $('quotaNote').textContent = d.updatedAt ? 'Codex 账号额度 · 更新于 ' + new Date(d.updatedAt * 1000).toLocaleTimeString('zh-CN', {hour12:false}) : '生成与额度共用 Codex 登录';
+  }
+  async function refreshQuota() {
+    if (!Q.id || Q.loading) return;
+    clearTimeout(Q.timer);
+    const seq = Q.seq;
+    Q.loading = true; renderQuota();
+    try {
+      const d = await api(quotaPath());
+      if (seq !== Q.seq) return;
+      Q.data = d;
+    } catch (e) {
+      if (seq !== Q.seq) return;
+      Q.data = {message:e.message};
+    } finally {
+      if (seq === Q.seq) {
+        Q.loading = false; renderQuota();
+        Q.timer = setTimeout(() => { if (!document.hidden || Q.data?.pending) refreshQuota(); }, Q.data?.pending ? 1500 : 60000);
+      }
+    }
+  }
+  async function quotaAction(action) {
+    if (!Q.id || Q.loading) return;
+    clearTimeout(Q.timer);
+    const seq = Q.seq;
+    Q.loading = true; renderQuota();
+    try {
+      await api(quotaPath('/' + action), {method:'POST', body:{}});
+      if (seq !== Q.seq) return;
+      Q.data = null;
+    } catch (e) {
+      if (seq !== Q.seq) return;
+      Q.data = Object.assign({}, Q.data, {message:e.message});
+      Q.loading = false; renderQuota(); return;
+    } finally {
+      if (seq === Q.seq) Q.loading = false;
+    }
+    if (seq === Q.seq) {
+      refreshQuota();
+      if (P.curId === Q.id && P.draft?.authMode === 'chatgpt') {
+        clearTimeout(chatgptPoll);
+        refreshChatGPTStatus(Q.id, action === 'login');
+      }
+    }
+  }
+  $('btnQuotaLogin').addEventListener('click', () => quotaAction('login'));
+  $('btnQuotaCancel').addEventListener('click', () => quotaAction('cancel'));
+  $('btnQuotaLogout').addEventListener('click', () => quotaAction('logout'));
+  $('btnQuotaRefresh').addEventListener('click', refreshQuota);
+  $('btnQuotaUsage').addEventListener('click', async () => {
+    if (!Q.id) return;
+    try { await api('/api/chatgpt/usage?providerId=' + encodeURIComponent(Q.id), {method:'POST',body:{}}); }
+    catch (e) { toast(e.message, true); }
+  });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshQuota(); });
+
   // ── 供应商管理弹窗 ──────────────────────────────────────
   const P = { curId: '', draft: null };
+	let chatgptPoll = 0;
+	function chatgptPath(action, id = P.curId) {
+	  return '/api/chatgpt/' + action + '?providerId=' + encodeURIComponent(id);
+	}
+	function renderChatGPTAccount() {
+	  clearTimeout(chatgptPoll);
+	  const plan = P.draft && P.draft.authMode === 'chatgpt';
+	  $('chatgptAccount').hidden = !plan;
+	  [$('pfProto').closest('.fld'), $('pfBase').closest('.fld'), $('pfKey').closest('.fld')].forEach(n => n.classList.toggle('chatgpt-hidden', !!plan));
+	  if (!plan) return;
+	  $('chatgptStatus').textContent = '正在读取 Codex 登录状态…';
+	  $('btnChatGPTLogin').disabled = false;
+	  $('btnChatGPTLogin').hidden = false;
+	  $('btnChatGPTCancel').hidden = true;
+	  $('btnChatGPTLogout').hidden = true;
+	  const saved = (S.settings.providers || []).find(x => x.id === P.curId);
+	  if (saved && saved.authMode === 'chatgpt') refreshChatGPTStatus(P.curId);
+	  else $('chatgptStatus').textContent = '点击登录将保存供应商并打开官方授权页';
+	}
+	async function refreshChatGPTStatus(id, afterLogin = false) {
+	  try {
+	    const state = await api(chatgptPath('status', id));
+	    if (P.curId !== id || P.draft?.authMode !== 'chatgpt') return;
+	    $('btnChatGPTLogin').disabled = state.pending;
+	    $('btnChatGPTLogin').hidden = state.connected && !state.pending;
+	    $('btnChatGPTCancel').hidden = !state.pending;
+	    $('btnChatGPTLogout').hidden = !state.connected;
+	    $('chatgptStatus').textContent = state.pending ? '请在系统浏览器中完成 Codex 登录…' : state.message || (state.connected ? `${state.email || '已连接账号'} · 已登录 Codex，生成与额度共用此账号` : '尚未登录');
+	    if (state.pending) {
+	      chatgptPoll = setTimeout(() => refreshChatGPTStatus(id, afterLogin), 1500);
+	    } else if (afterLogin && state.connected) {
+	      refreshQuota();
+	      $('btnFetchProv').click();
+	    }
+	  } catch (e) {
+	    if (P.curId === id) { $('chatgptStatus').textContent = e.message; $('btnChatGPTLogin').disabled = false; }
+	  }
+	}
+	$('pfAuthMode').addEventListener('change', () => {
+	  if (!P.draft) return;
+	  P.draft.authMode = $('pfAuthMode').value;
+	  if (P.draft.authMode === 'chatgpt') {
+	    P.draft.protocol = 'openai-responses'; P.draft.baseUrl = 'https://api.openai.com/v1'; P.draft.apiKey = '';
+	    P.draft.models = []; P.draft.modelCaps = {};
+	    $('pfBase').value = P.draft.baseUrl; $('pfKey').value = '';
+	    renderProtoGrid(); renderProvModels(); renderCapsTable();
+	  }
+	  renderChatGPTAccount();
+	});
+	$('btnChatGPTLogin').addEventListener('click', async () => {
+	  const id = P.curId;
+	  if (!await saveProvider() || P.curId !== id) return;
+	  $('btnChatGPTLogin').disabled = true;
+	  try {
+	    await api(chatgptPath('login', id), {method:'POST', body:{}});
+	    clearTimeout(chatgptPoll); await refreshChatGPTStatus(id, true);
+	  } catch (e) { $('chatgptStatus').textContent = e.message; $('btnChatGPTLogin').disabled = false; }
+	});
+	$('btnChatGPTCancel').addEventListener('click', async () => {
+	  try { await api(chatgptPath('cancel'), {method:'POST', body:{}}); clearTimeout(chatgptPoll); await refreshChatGPTStatus(P.curId); }
+	  catch(e) { toast(e.message, true); }
+	});
+	$('btnChatGPTLogout').addEventListener('click', async () => {
+	  try { await api(chatgptPath('logout'), {method:'POST', body:{}}); toast('已退出 Codex'); await refreshChatGPTStatus(P.curId); refreshQuota(); }
+	  catch(e) { toast(e.message, true); }
+	});
+	$('btnChatGPTUsage').addEventListener('click', async () => {
+	  try { await api(chatgptPath('usage'), {method:'POST', body:{}}); } catch(e) { toast(e.message, true); }
+	});
 
   function openProviders() {
     if (!S.settings) return;
@@ -3340,7 +3540,7 @@
     (S.settings.providers || []).forEach((p) => {
       const row = el('div', 'prov-item' + (p.id === P.curId ? ' active' : ''));
       row.appendChild(el('span', 'pname', p.name || p.id));
-      row.appendChild(el('span', 'pproto', (protoMeta(p.protocol).label || p.protocol)));
+      row.appendChild(el('span', 'pproto', p.authMode === 'chatgpt' ? 'ChatGPT 订阅' : (protoMeta(p.protocol).label || p.protocol)));
       row.addEventListener('click', () => selectProvider(p.id));
       box.appendChild(row);
     });
@@ -3358,6 +3558,8 @@
     $('pfKey').type = 'password';
     $('pfModelInput').value = '';
     $('pfExtended').checked = extendedThinking();
+	$('pfAuthMode').value = P.draft.authMode || '';
+	renderChatGPTAccount();
     renderProtoGrid();
     renderProvModels();
     renderCapsTable();
@@ -3522,6 +3724,7 @@
   });
   $('btnFetchProv').addEventListener('click', async () => {
     if (!P.draft) return;
+	if (P.draft.authMode === 'chatgpt' && !await saveProvider()) return;
     const b = $('btnFetchProv');
     b.disabled = true;
     b.textContent = '…';
@@ -3618,7 +3821,7 @@
     selectProvider(P.curId);
     addLog('LOG', `已删除供应商 ${name}`);
   });
-  $('btnProvSave').addEventListener('click', async () => {
+  async function saveProvider() {
     if (!P.draft) return;
     const idx = S.settings.providers.findIndex((p) => p.id === P.draft.id);
     const clean = JSON.parse(JSON.stringify(P.draft));
@@ -3649,11 +3852,14 @@
       selectProvider(clean.id);
       toast('供应商已保存');
       addLog('LOG', `供应商已保存：${clean.name}`);
+	  return true;
     } catch (e) {
       toast('保存失败：' + e.message, true);
       addLog('ERROR', '供应商保存失败：' + e.message);
+	  return false;
     }
-  });
+  }
+  $('btnProvSave').addEventListener('click', saveProvider);
   $('btnProviders').addEventListener('click', openProviders);
 
   // ── 提示词库弹窗 ────────────────────────────────────────

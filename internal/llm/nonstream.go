@@ -155,6 +155,7 @@ func (c *openaiResponses) decodeNonStream(raw []byte) []StreamEvent {
 	if err := out.checkStatus(""); err != nil {
 		return append(evs, errorEvents(err)...)
 	}
+	evs = append(evs, StreamEvent{Kind: EvServiceTier, Text: out.ServiceTier})
 	if out.Output == nil {
 		return append(evs, errorEvents(noRetry(fmt.Errorf("openai-responses 响应缺少 output：%s", decodeError(raw))))...)
 	}

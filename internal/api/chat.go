@@ -40,6 +40,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		Model     string              `json:"model"`
 		Provider  string              `json:"providerId"`
 		Thinking  string              `json:"thinking"`
+		FastMode  *bool               `json:"fastMode"`
 		Session   string              `json:"session"`
 		RunID     string              `json:"runId"`
 		Layer     string              `json:"layer"`     // 前端当前选中的图层（可选，仅作提示）
@@ -72,7 +73,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "未选择模型")
 		return
 	}
-	if prov.APIKey == "" {
+	if prov.APIKey == "" && prov.AuthMode != "chatgpt" {
 		writeErr(w, http.StatusBadRequest, "该供应商未填写 API Key")
 		return
 	}
@@ -98,6 +99,23 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	client := llm.NewClient(prov.Protocol, llm.NormalizeBaseURL(prov.Protocol, prov.BaseURL), prov.APIKey, llm.DefaultTransport())
+	fast := st.FastMode
+	if in.FastMode != nil {
+		fast = *in.FastMode
+	}
+	serviceTier := ""
+	if fast && prov.Protocol == config.ProtoOpenAIResp {
+		serviceTier = "priority"
+	}
+	if prov.AuthMode == "chatgpt" {
+		if state := s.codex.Status(r.Context(), prov.ID); !state.Connected {
+			writeErr(w, 400, state.Message)
+			return
+		}
+		connection := s.codex.Client(prov.ID)
+		defer connection.Close()
+		client = connection
+	}
 	session := in.Session
 	if session == "" {
 		session = "s" + randomID()
@@ -184,6 +202,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		Model:            model,
 		MaxTokens:        caps.MaxTokens,
 		Thinking:         thinking,
+		ServiceTier:      serviceTier,
 		Transport:        llm.DefaultTransport(),
 		Emit:             emit,
 		Layers:           s.projectBridge(),

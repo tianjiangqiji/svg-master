@@ -234,6 +234,18 @@ func (e *Engine) handleStreamEvent(ev llm.StreamEvent, res *streamResult, accs m
 			u := *ev.Usage
 			res.usage = &u
 		}
+	case llm.EvServiceTier:
+		e.emit(Event{Kind: EvServiceTier, Text: ev.Text})
+		if e.deps.ServiceTier == "priority" {
+			switch ev.Text {
+			case "priority", "fast":
+				e.logf("info", "本轮已使用 Fast 加速")
+			case "default":
+				e.logf("warn", "已请求 Fast，但服务端本轮按标准档位处理")
+			default:
+				e.logf("info", "已请求 Fast，服务端未确认使用 Fast 档位")
+			}
+		}
 
 	case llm.EvError:
 		if ev.Cause != nil {
