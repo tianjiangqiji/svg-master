@@ -334,8 +334,8 @@
 
   // ── 右栏区块折叠（Agent 默认折叠） ─────────────────────
   // 状态存在 localStorage：重开窗口保持上次的布局习惯。
-  const RBLOCKS = ['blkUsage', 'blkQuota', 'layerBlock', 'blkAgent', 'blkRaw'];
-  const RBLOCK_DEFAULT = { blkUsage: false, blkQuota: false, layerBlock: false, blkAgent: true, blkRaw: false };
+  const RBLOCKS = ['blkUsage', 'layerBlock', 'blkAgent', 'blkRaw'];
+  const RBLOCK_DEFAULT = { blkUsage: false, layerBlock: false, blkAgent: true, blkRaw: false };
   function rblockState() {
     let saved = null;
     try { saved = JSON.parse(localStorage.getItem('svg.rblocks') || 'null'); } catch { saved = null; }
@@ -2099,6 +2099,10 @@
     if (!bar) return;
     const on = S.genMode === 'anim';
     bar.classList.toggle('hidden', !on);
+    // 导出 GIF 常驻顶栏（保存按钮左侧），只有动图模式才露面。
+    const gif = $('btnGif');
+    if (gif) gif.classList.toggle('hidden', !on);
+    updateSaveTitle();
     if (!on) { animStop(); return; }
     animAnalyze();
     const a = S.anim;
@@ -2113,7 +2117,6 @@
       play.disabled = !canPlay;
       play.title = canPlay ? '播放 / 暂停' : '当前画面不是动图';
     }
-    const gif = $('btnGif');
     if (gif) {
       gif.disabled = a.busy || !S.svg;
       gif.textContent = a.busy ? '导出中…' : '导出 GIF';
@@ -3335,10 +3338,10 @@
     }
   });
   $('btnSave').addEventListener('click', async (ev) => {
-    // 见下：Alt+点击 = 导出单文件
     // 工程模式下「保存」= 落盘（图层文件 + project.json）；
     // 按住 Alt（或快速模式）时退化为导出单文件 SVG。
-    if (!ev.altKey && S.project && S.project.open && S.project.mode === 'project') {
+    // 动图模式例外：动图没有可落盘的图层工程，保存一律导出 SVG 源码文件。
+    if (S.genMode !== 'anim' && !ev.altKey && S.project && S.project.open && S.project.mode === 'project') {
       try {
         const r = await api('/api/project/save', { method: 'POST', body: {} });
         addLog('LOG', `工程已保存${r && r.files ? `（${r.files} 个文件）` : ''}`);
@@ -3361,10 +3364,16 @@
     addLog('LOG', '已导出 ' + a.download);
   });
 
-  // 保存按钮的提示随工程模式变化
+  // 保存按钮的提示随工程模式 / 动图模式变化
   function updateSaveTitle() {
     const b = $('btnSave');
     if (!b) return;
+    if (S.genMode === 'anim') {
+      // 动图模式：保存=导出 SVG 源码文件（不含 GIF 编码，导出动图请用旁边那个按钮）
+      b.title = '导出 SVG 源码文件（动图模式保存代码，导出 GIF 用左侧按钮）';
+      b.textContent = '保存代码';
+      return;
+    }
     const pm = S.project && S.project.open && S.project.mode === 'project';
     b.title = pm ? '保存工程（Alt+点击导出单文件 SVG）' : '导出 SVG';
     b.textContent = pm ? '保存工程' : '保存';
