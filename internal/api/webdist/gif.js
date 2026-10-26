@@ -6,7 +6,7 @@
  *   var blob = enc.finish();                        // → Blob('image/gif')
  *
  * 设计取舍：
- *   - 首帧用中位切分（median cut）建一张 ≤255 色的全局调色板，后面每帧映射到最近色；
+ *   - 从全部帧用中位切分（median cut）建全局调色板，每帧映射到最近色；
  *     动图各帧色调通常一致，全局调色板能让文件更小、切换更稳。
  *   - 单帧内部不再做抖动（dithering）：SVG 转出来的画面本身是大色块，
  *     抖动只会让 GIF 变大、边缘变脏。
@@ -99,6 +99,7 @@
       if (hit !== undefined) return hit;
       var best = 0, bestD = Infinity;
       for (var i = 0; i < n; i++) {
+        if (i === transparentIndex) continue; // 不把不透明的深色像素映射为透明色
         var c = colors[i];
         var dr = r - c[0], dg = g - c[1], db = b - c[2];
         var d = dr * dr + dg * dg + db * db;
@@ -235,8 +236,7 @@
     this.transparentIndex = -1;
   }
 
-  /* addFrame 接收 RGBA 像素（Uint8ClampedArray / Uint8Array）与延迟（厘秒）。
-   * 首帧建调色板；后续帧复用同一张全局色表。 */
+  /* addFrame 接收完整 RGBA 帧（Uint8ClampedArray / Uint8Array）与延迟（厘秒）。 */
   GIFEncoder.prototype.addFrame = function (rgba, delayCs) {
     if (!rgba || rgba.length < this.w * this.h * 4) return false;
     var d = delayCs === undefined ? 10 : Math.max(1, delayCs | 0);
@@ -279,7 +279,7 @@
     buf.u16(this.h);
     // 全局色表标志 | 颜色分辨率(7) | 排序(0) | 色表大小
     buf.byte(0x80 | 0x70 | (bits - 1));
-    buf.byte(0); // 背景色索引
+    buf.byte(hasAlpha ? this.transparentIndex : 0); // 透明帧清除到透明背景
     buf.byte(0); // 像素宽高比
     // ---- 全局色表 ----
     for (var c = 0; c < tableSize; c++) {
@@ -305,8 +305,8 @@
       }
       // ---- Graphic Control Extension ----
       buf.byte(0x21); buf.byte(0xf9); buf.byte(0x04);
-      // 处置方式 1（保留当前帧，配合整帧重绘）| 透明色标志
-      var disposal = 1;
+      // 输入是完整帧：透明背景必须先清除上一帧，避免残影累积成静态画面。
+      var disposal = hasAlpha ? 2 : 1;
       var flags = (disposal << 2) | (this.transparentIndex >= 0 ? 1 : 0);
       buf.byte(flags);
       buf.u16(fr.delay);

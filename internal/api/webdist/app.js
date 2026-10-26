@@ -2050,17 +2050,27 @@
     if (!a.userFps) a.fps = 8;
   }
 
-  // animShowFrame 只显示第 idx 帧（其余分组 display:none），保留嵌套与祖先变换。
+  // 帧分组由播放器统一控制显隐。生成的 SVG 可能同时用 SMIL 切换
+  // opacity / visibility；仅切 display 会让两条时间轴错位，整幅图消失。
+  const animFrameStyles = new WeakMap();
   function animShowFrame(root, idx) {
     const groups = animGroups(root);
     groups.forEach((g, i) => {
-      if (i === idx) g.style.removeProperty('display');
-      else g.style.display = 'none';
+      if (!animFrameStyles.has(g)) animFrameStyles.set(g, g.getAttribute('style'));
+      g.style.setProperty('display', i === idx ? 'inline' : 'none', 'important');
+      g.style.setProperty('opacity', '1', 'important');
+      g.style.setProperty('visibility', 'visible', 'important');
     });
   }
 
   function animShowAll(root) {
-    animGroups(root).forEach((g) => g.style.removeProperty('display'));
+    animGroups(root).forEach((g) => {
+      if (!animFrameStyles.has(g)) return;
+      const style = animFrameStyles.get(g);
+      if (style === null) g.removeAttribute('style');
+      else g.setAttribute('style', style);
+      animFrameStyles.delete(g);
+    });
   }
 
   function animStop() {
@@ -2123,7 +2133,7 @@
         a.index = (a.index + 1) % Math.max(1, a.frames);
         animShowFrame(r, a.index);
         const pos = $('animPos');
-        if (pos) pos.textContent = animPos();
+        if (pos && !a.busy) pos.textContent = animPos();
       }, Math.round(1000 / clamp(a.fps, 1, 30)));
       a.playing = true;
     } else if (a.source === 'smil') {
@@ -2214,13 +2224,7 @@
     const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml');
     if (doc.querySelector('parsererror')) return svgText;
     const root = doc.documentElement;
-    const groups = Array.from(root.querySelectorAll('[data-frame]'));
-    if (idx >= 0 && groups.length > 1) {
-      groups.forEach((g, i) => {
-        if (i === idx) g.removeAttribute('display');
-        else g.setAttribute('display', 'none');
-      });
-    }
+    if (idx >= 0 && animGroups(root).length > 1) animShowFrame(root, idx);
     root.setAttribute('width', String(w));
     root.setAttribute('height', String(h));
     if (!root.getAttribute('xmlns')) root.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
@@ -2228,17 +2232,25 @@
     return new XMLSerializer().serializeToString(root);
   }
 
-  // svgTextAtTime SMIL 采样：把所有动画的 begin 前置一个负偏移，
-  // 让它在 t=0 时就已经播了 t 秒——<img> 里没法 setCurrentTime，只能这样定格。
+  // svgTextAtTime SMIL 采样：平移绝对 begin / end，保留同步事件的相对时间。
+  // 不能追加原 begin，否则 begin="-1s;0s" 会在图像载入时重启动画。
   function svgTextAtTime(svgText, t, w, h) {
     const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml');
     if (doc.querySelector('parsererror')) return svgText;
     const root = doc.documentElement;
     root.querySelectorAll(ANIM_TAGS).forEach((n) => {
-      const begin = (n.getAttribute('begin') || '').trim();
-      // 只挪时间型 begin；click / indefinite 之类保持原样，挪了会坏。
-      if (begin && !/^\s*-?[\d.]+(ms|s|min|h)?\s*$/i.test(begin.split(';')[0])) return;
-      n.setAttribute('begin', `-${t}s` + (begin ? ';' + begin : ''));
+      for (const attr of ['begin', 'end']) {
+        const value = n.getAttribute(attr);
+        if (attr === 'end' && !value) continue;
+        const shifted = (value || '0s').split(';').map((part) => {
+          const m = /^\s*([+-]?)(\d+(?:\.\d*)?|\.\d+)\s*(ms|s|min|h)?\s*$/i.exec(part);
+          // click / indefinite / other.end 等相对事件仍由 SVG 自己求值。
+          if (!m) return part;
+          const seconds = parseDur(m[2] + (m[3] || 's')) * (m[1] === '-' ? -1 : 1);
+          return `${seconds - t}s`;
+        });
+        n.setAttribute(attr, shifted.join(';'));
+      }
     });
     root.setAttribute('width', String(w));
     root.setAttribute('height', String(h));
@@ -2289,26 +2301,28 @@
     if (!S.svg) { toast('画布还是空的', true); return; }
     if (typeof window.GIFEncoder !== 'function') { toast('GIF 编码器没有加载，无法导出', true); return; }
     a.busy = true;
-    const wasPlaying = a.playing;
-    animStop();
     syncAnimBar();
     try {
       animAnalyze();
+      // 每帧都从这份快照采样，不暂停/重启画布，也不混入导出期间的新 SVG。
+      const svg = S.svg;
+      const source = a.source;
+      const frames = a.frames;
       const size = animTargetSize();
       const fps = clamp(a.fps, 1, 30);
       const delayCs = Math.max(2, Math.round(100 / fps));
       const enc = new window.GIFEncoder(size.w, size.h, { loop: 0 });
       let made = 0;
 
-      if (a.source === 'frames' && a.frames > 1) {
-        for (let i = 0; i < a.frames; i++) {
+      if (source === 'frames' && frames > 1) {
+        for (let i = 0; i < frames; i++) {
           const pos = $('animPos');
-          if (pos) pos.textContent = `导出中 ${i + 1} / ${a.frames}`;
-          const text = svgTextForFrame(S.svg, i, size.w, size.h);
+          if (pos) pos.textContent = `导出中 ${i + 1} / ${frames}`;
+          const text = svgTextForFrame(svg, i, size.w, size.h);
           const data = await rasterizeSVG(text, size.w, size.h);
           if (enc.addFrame(data.data, delayCs)) made++;
         }
-      } else if (a.source === 'smil') {
+      } else if (source === 'smil') {
         const root = animRoot();
         const dur = root ? smilDuration(root) : 2;
         const total = clamp(Math.round(dur * fps), 2, 48);
@@ -2316,14 +2330,14 @@
           const pos = $('animPos');
           if (pos) pos.textContent = `导出中 ${i + 1} / ${total}`;
           const t = (i / total) * dur;
-          const text = svgTextAtTime(S.svg, t, size.w, size.h);
+          const text = svgTextAtTime(svg, t, size.w, size.h);
           const data = await rasterizeSVG(text, size.w, size.h);
           if (enc.addFrame(data.data, delayCs)) made++;
         }
       } else {
         const pos = $('animPos');
         if (pos) pos.textContent = '导出中 1 / 1';
-        const text = svgTextForFrame(S.svg, -1, size.w, size.h);
+        const text = svgTextForFrame(svg, -1, size.w, size.h);
         const data = await rasterizeSVG(text, size.w, size.h);
         if (enc.addFrame(data.data, 100)) made++;
       }
@@ -2341,7 +2355,6 @@
     } finally {
       a.busy = false;
       syncAnimBar();
-      if (wasPlaying) animPlay();
     }
   }
 

@@ -196,8 +196,9 @@ SVG Master 为每个供应商维护独立的登录，不自动使用其他 Codex
 
 - 动图模式下的 SVG 照常渲染在画布上，**SMIL（`<animate>` / `<animateTransform>` / `<animateMotion>` / `<set>`）由浏览器原生播放**，不需要额外动画库。
 - 画布下方出现动图工具条：**播放 / 暂停**、**帧率**（1–30，仅对多帧分组动画生效）、帧位置显示、**导出 GIF**。
-- **导出 GIF 是纯前端实现**：把 SVG 序列化 → `Image` 载入 → 逐帧 `drawImage` 到 canvas → 自写 GIF89a 编码器（中位切分量化 + LZW + 帧差透明）打包成 Blob 下载。零第三方依赖、不经过后端、不需要联网。
-- 多帧分组动画（多个 `data-frame` 图层或 `<g id="frame-N">`）走「逐帧显隐 + 定时采样」；SMIL 动画走「按帧率在时间轴上采样」，两条路径共用同一个编码器。
+- **导出 GIF 是纯前端实现**：从当前 SVG 的固定快照逐帧序列化 → `Image` 载入 → `drawImage` 到 canvas → 自写 GIF89a 编码器（中位切分量化 + LZW + 透明背景逐帧清除）打包成 Blob 下载。导出保持画布原有播放 / 暂停状态，零第三方依赖、不经过后端、不需要联网。
+- 多帧分组动画（多个 `data-frame` 分组）按编号排序，预览和导出统一控制分组的 `display`、`opacity`、`visibility`，兼容同时带 SMIL 显隐动画的 SVG；纯 SMIL 动画走「按帧率平移时间采样」，两条路径共用同一个编码器。原始 SVG 源码保持不变。
+- GIF 导出的浏览器回归测试及运行方式见 [test/pw/README.md](test/pw/README.md)。
 
 ## 生成能力
 
