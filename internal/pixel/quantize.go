@@ -72,8 +72,9 @@ func ExtractPalette(src image.Image, maxColors int) []string {
 	b := src.Bounds()
 	get := picker(src)
 	histogram := make(map[color.NRGBA]int)
-	// Sample a bounded set on large assets. Every drawable canvas is small enough to scan exactly.
-	step := max(1, int(math.Ceil(math.Sqrt(float64(b.Dx()*b.Dy())/float64(MaxSize*MaxSize)))))
+	// Keep the histogram bounded for both large source assets and large canvases.
+	const paletteSamplePixels = 512 * 512
+	step := max(1, int(math.Ceil(math.Sqrt(float64(b.Dx()*b.Dy())/paletteSamplePixels))))
 	for y := min(b.Max.Y-1, b.Min.Y+step/2); y < b.Max.Y; y += step {
 		for x := min(b.Max.X-1, b.Min.X+step/2); x < b.Max.X; x += step {
 			c := get(x, y)

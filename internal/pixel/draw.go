@@ -14,7 +14,7 @@ import (
 const (
 	maxOperations = 256
 	maxCoordinate = 4096
-	maxDrawWork   = 24 * MaxSize * MaxSize
+	maxDrawWork   = 8 * MaxSize * MaxSize
 )
 
 type DrawOp struct {
@@ -546,8 +546,8 @@ func (d *painter) mirror(r image.Rectangle, horizontal bool) {
 func parseRow(row string) ([]rune, error) {
 	if !strings.HasPrefix(row, "rle:") {
 		pixels := []rune(row)
-		if len(pixels) > MaxSize {
-			return nil, fmt.Errorf("像素行宽不能超过 %d", MaxSize)
+		if len(pixels) > MaxBlitSpan {
+			return nil, fmt.Errorf("像素行宽不能超过 %d", MaxBlitSpan)
 		}
 		return pixels, nil
 	}
@@ -562,8 +562,8 @@ func parseRow(row string) ([]rune, error) {
 			return nil, fmt.Errorf("RLE 行应使用计数加单个字符，例如 rle:2.3K2.")
 		}
 		n, err := strconv.Atoi(row[:i])
-		if err != nil || n < 1 || n > MaxSize-len(out) {
-			return nil, fmt.Errorf("RLE 行宽不能超过 %d，且每段计数必须大于零", MaxSize)
+		if err != nil || n < 1 || n > MaxBlitSpan-len(out) {
+			return nil, fmt.Errorf("RLE 行宽不能超过 %d，且每段计数必须大于零", MaxBlitSpan)
 		}
 		r, size := utf8.DecodeRuneInString(row[i:])
 		if r == '\\' {
@@ -582,8 +582,8 @@ func parseRow(row string) ([]rune, error) {
 }
 
 func (d *painter) blit(o DrawOp) error {
-	if len(o.Rows) == 0 || len(o.Rows) > MaxSize || len(o.Legend) > MaxSize {
-		return fmt.Errorf("网格必须包含 1 到 %d 行，每个色标一个字符", MaxSize)
+	if len(o.Rows) == 0 || len(o.Rows) > MaxBlitSpan || len(o.Legend) > MaxBlitSpan*MaxBlitSpan {
+		return fmt.Errorf("网格宽高须在 1 到 %d 之间，每个色标一个字符", MaxBlitSpan)
 	}
 	legend := make(map[rune]color.NRGBA, len(o.Legend)+1)
 	for symbol, hex := range o.Legend {
@@ -603,7 +603,7 @@ func (d *painter) blit(o DrawOp) error {
 	width, unknown := -1, 0
 	ragged := false
 	for y, row := range o.Rows {
-		if len(row) > 8*MaxSize {
+		if len(row) > 8*MaxBlitSpan {
 			return fmt.Errorf("网格行超出字符预算")
 		}
 		pixels, err := parseRow(row)

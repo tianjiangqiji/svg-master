@@ -3,7 +3,6 @@ package pixel
 import (
 	"fmt"
 	"image"
-	"image/color"
 	"math"
 )
 
@@ -46,18 +45,27 @@ func ValidBlend(mode string) bool {
 	return ok
 }
 
+const (
+	alphaBits = 24
+	alphaOne  = 1 << alphaBits
+	alphaHalf = alphaOne / 2
+)
+
+type compositeSource struct {
+	img     *image.NRGBA
+	opacity float64
+	mode    blendMode
+	alpha   [256]uint32
+}
+
 // Composite flattens straight-alpha layer pixels in bottom-to-top order using Canvas source-over and CSS blend formulas.
 func Composite(w, h int, layers []Layer) (*image.NRGBA, error) {
 	out, err := New(w, h)
 	if err != nil {
 		return nil, err
 	}
-	type source struct {
-		img     *image.NRGBA
-		opacity float64
-		mode    blendMode
-	}
-	visible := make([]source, 0, len(layers))
+	visible := make([]compositeSource, 0, len(layers))
+	allNormal := true
 	for i, l := range layers {
 		if !l.Visible {
 			continue
@@ -73,38 +81,127 @@ func Composite(w, h int, layers []Layer) (*image.NRGBA, error) {
 			return nil, fmt.Errorf("图层不透明度必须在 0 到 1 之间")
 		}
 		if l.Opacity > 0 {
-			visible = append(visible, source{img: l.Image, opacity: l.Opacity, mode: mode})
+			src := compositeSource{img: l.Image, opacity: l.Opacity, mode: mode}
+			for a := range src.alpha {
+				src.alpha[a] = uint32(math.Round(float64(a) / 255 * l.Opacity * alphaOne))
+			}
+			allNormal = allNormal && mode == normal
+			visible = append(visible, src)
 		}
+	}
+	if len(visible) == 0 {
+		return out, nil
+	}
+	if allNormal {
+		compositeNormal(out, visible)
+		return out, nil
 	}
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
-			var back [3]float64
-			alpha := 0.0
-			for _, l := range visible {
-				c := l.img.NRGBAAt(x, y)
-				if c.A == 0 {
-					continue
-				}
-				a := float64(c.A) / 255 * l.opacity
-				src := [3]float64{float64(c.R) / 255, float64(c.G) / 255, float64(c.B) / 255}
-				if alpha == 0 || a == 1 && l.mode == normal {
-					back, alpha = src, a
-					continue
-				}
-				mix := blend(back, src, l.mode)
-				combined := a + alpha*(1-a)
-				for i, v := range src {
-					back[i] = (a*((1-alpha)*v+alpha*mix[i]) + (1-a)*alpha*back[i]) / combined
-				}
-				alpha = combined
-			}
-			opaque := byteValue(alpha * 255)
-			if opaque != 0 {
-				out.SetNRGBA(x, y, color.NRGBA{R: byteValue(back[0] * 255), G: byteValue(back[1] * 255), B: byteValue(back[2] * 255), A: opaque})
-			}
+			off := y*out.Stride + x*4
+			compositeFloat(out.Pix[off:off+4], visible, x*4, y)
 		}
 	}
 	return out, nil
+}
+
+func compositeNormal(out *image.NRGBA, layers []compositeSource) {
+	// A layer can contribute at most two fixed-point units of alpha error and
+	// at most 256 units of premultiplied RGB error. Use the original floating
+	// calculation near byte-rounding boundaries to preserve the rendered result.
+	uncertainty := 2048 * int64(len(layers))
+	last := &layers[len(layers)-1]
+	for y := 0; y < out.Rect.Dy(); y++ {
+		for x := 0; x < out.Rect.Dx()*4; x += 4 {
+			off := y*out.Stride + x
+			dst := out.Pix[off : off+4]
+			i := y*last.img.Stride + x
+			if last.opacity == 1 && last.img.Pix[i+3] == 255 {
+				copy(dst, last.img.Pix[i:i+4])
+				continue
+			}
+			var alpha uint32
+			var back [3]uint32
+			for j := range layers {
+				l := &layers[j]
+				i := y*l.img.Stride + x
+				src := l.img.Pix[i : i+4]
+				a := l.alpha[src[3]]
+				if a == 0 {
+					continue
+				}
+				if a == alphaOne && l.opacity == 1 {
+					alpha = alphaOne
+					for k := range back {
+						back[k] = uint32(src[k]) * alphaOne
+					}
+					continue
+				}
+				rest := uint64(alphaOne - a)
+				alpha = a + uint32((uint64(alpha)*rest+alphaHalf)>>alphaBits)
+				for k := range back {
+					back[k] = uint32(src[k])*a + uint32((uint64(back[k])*rest+alphaHalf)>>alphaBits)
+				}
+			}
+			if alpha == 0 {
+				continue
+			}
+			alphaByte := uint64(alpha)*255 + alphaHalf
+			fraction := int64(alphaByte & (alphaOne - 1))
+			if 2*min(fraction, alphaOne-fraction) <= uncertainty {
+				compositeFloat(dst, layers, x, y)
+				continue
+			}
+			if alphaByte < alphaOne {
+				continue
+			}
+			dst[3] = uint8(alphaByte >> alphaBits)
+			for k, value := range back {
+				if withinRoundingError(2*int64(value%alpha)-int64(alpha), uncertainty) {
+					compositeFloat(dst, layers, x, y)
+					break
+				}
+				dst[k] = uint8((value + alpha/2) / alpha)
+			}
+		}
+	}
+}
+
+func withinRoundingError(distance, uncertainty int64) bool {
+	return -uncertainty <= distance && distance <= uncertainty
+}
+
+func compositeFloat(dst []byte, layers []compositeSource, x, y int) {
+	var back [3]float64
+	alpha := 0.0
+	for i := range layers {
+		l := &layers[i]
+		off := y*l.img.Stride + x
+		c := l.img.Pix[off : off+4]
+		if c[3] == 0 {
+			continue
+		}
+		a := float64(c[3]) / 255 * l.opacity
+		src := [3]float64{float64(c[0]) / 255, float64(c[1]) / 255, float64(c[2]) / 255}
+		if alpha == 0 || a == 1 && l.mode == normal {
+			back, alpha = src, a
+			continue
+		}
+		mix := blend(back, src, l.mode)
+		combined := a + alpha*(1-a)
+		for k, v := range src {
+			back[k] = (a*((1-alpha)*v+alpha*mix[k]) + (1-a)*alpha*back[k]) / combined
+		}
+		alpha = combined
+	}
+	dst[3] = byteValue(alpha * 255)
+	if dst[3] != 0 {
+		for k, v := range back {
+			dst[k] = byteValue(v * 255)
+		}
+	} else {
+		clear(dst[:3])
+	}
 }
 
 func blend(back, src [3]float64, mode blendMode) [3]float64 {

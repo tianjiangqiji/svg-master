@@ -311,9 +311,15 @@
   const workspacePrompts = { svg: '', pixel: '' };
   const isPixel = () => workspace === 'pixel';
   const projectEngine = (pj = S.project) => pj?.engine || 'svg';
+  const pixelAnimation = (pj = S.project) => pj?.engine === 'pixel' && pj.pixel?.mode === 'anim' ? pj.pixel.anim : null;
+  const projectEntries = (pj = S.project) => pixelAnimation(pj)?.frames || pj?.layers || [];
+  const projectActiveEntry = (pj = S.project) => pixelAnimation(pj)?.activeFrameId || pj?.activeLayer;
   const hasWorkspaceProject = () => S.project?.open && projectEngine() === workspace;
   const pixel = window.createPixelStudio?.({
     api, toast, applyProject, isActive: isPixel, openProject: () => openProjectModal(), token: TOKEN,
+    confirm: (title, text, ok) => new Promise((resolve) => confirmBox({
+      title, text, ok, onOk: () => resolve(true), onCancel: () => resolve(false),
+    })),
   });
   if (!pixel) {
     $('workspacePixel').classList.add('hidden');
@@ -343,6 +349,7 @@
   function showWorkspace(engine) {
     const next = engine === 'pixel' && pixel ? 'pixel' : 'svg';
     if (next !== workspace) {
+      if (isPixel()) pixel.stopPlayback();
       workspacePrompts[workspace] = $('prompt').value;
       workspace = next;
       $('prompt').value = workspacePrompts[next];
@@ -2481,8 +2488,9 @@
     }
     const prevActive = S.project && S.project.activeLayer;
     S.project = pj;
-    if (pj.engine === 'pixel' || !S.pickedLayer || !pj.layers.some((l) => l.id === S.pickedLayer)) {
-      S.pickedLayer = pj.activeLayer || (pj.layers[0] && pj.layers[0].id) || '';
+    const displayed = projectEntries(pj);
+    if (pj.engine === 'pixel' || !S.pickedLayer || !displayed.some((l) => l.id === S.pickedLayer)) {
+      S.pickedLayer = opts?.frameId || projectActiveEntry(pj) || displayed[0]?.id || '';
     }
     if (pj.engine === 'pixel') {
       pixel?.setProject(pj, opts);
@@ -2535,16 +2543,38 @@
     if (!box) return;
     box.innerHTML = '';
     const pj = S.project;
+    const animated = isPixel() && Boolean(pixelAnimation(pj));
+    const countable = hasWorkspaceProject() ? projectEntries(pj) : [];
+    const activeID = animated && S.running ? S.pickedLayer : projectActiveEntry(pj);
+    const activeLayer = countable.find((entry) => entry.id === activeID);
+    const subject = animated ? '帧' : '图层';
+    $('layerBlockTitle').textContent = animated ? '帧序列' : '图层';
+    document.documentElement.dataset.pixelMode = animated ? 'anim' : 'static';
+    $('pixelFrameProperties').classList.toggle('hidden', !animated);
+    $('btnAddLayer').title = '新建' + subject;
+    $('btnLayerDel').title = '删除当前' + subject;
+    $('btnLayerUp').title = animated ? '前移一帧' : '上移一层';
+    $('btnLayerDown').title = animated ? '后移一帧' : '下移一层';
+    $('pixelDuplicate').title = '复制当前' + subject;
     const on = isPixel() || !!(S.settings && S.settings.layers && S.settings.layers.enabled);
     $('layerBlock').classList.toggle('hidden', !on);
     if (isPixel()) {
-      const active = hasWorkspaceProject() && pj.layers?.find((layer) => layer.id === pj.activeLayer);
-      const editable = Boolean(active) && !S.running && !preparingPixelRun;
-      $('pixelLayerOpacity').disabled = !editable;
-      $('pixelBlend').disabled = !editable;
-      $('pixelDuplicate').disabled = !editable;
-      $('pixelLayerOpacity').value = active ? Math.round((active.opacity ?? 1) * 100) : 100;
-      $('pixelBlend').value = active?.blend || 'normal';
+      const editable = hasWorkspaceProject() && !S.running && !preparingPixelRun;
+      const atLimit = countable.length >= pixel.layerLimit;
+      if (atLimit) $('btnAddLayer').title = (animated ? '最多支持 ' : '当前画布最多支持 ') + pixel.layerLimit + ' ' + subject;
+      $('btnAddLayer').disabled = !editable || atLimit;
+      $('pixelLayerOpacity').disabled = !editable || !activeLayer;
+      $('pixelBlend').disabled = !editable || !activeLayer;
+      $('pixelDuplicate').disabled = !editable || !activeLayer || atLimit;
+      $('btnLayerDel').disabled = !editable || !activeLayer || activeLayer.locked || (animated && countable.length <= 1);
+      $('btnLayerUp').disabled = !editable || !activeLayer || activeLayer.index === (animated ? 1 : countable.length);
+      $('btnLayerDown').disabled = !editable || !activeLayer || activeLayer.index === (animated ? countable.length : 1);
+      $('pixelFrameDelay').disabled = !editable || !activeLayer || activeLayer.locked;
+      $('pixelFrameDelay').value = activeLayer?.delayMult || 1;
+      $('pixelLayerOpacity').value = activeLayer ? Math.round((activeLayer.opacity ?? 1) * 100) : 100;
+      $('pixelBlend').value = activeLayer?.blend || 'normal';
+    } else {
+      for (const button of ['btnAddLayer', 'btnLayerDel', 'btnLayerUp', 'btnLayerDown']) $(button).disabled = false;
     }
     if (!hasWorkspaceProject()) {
       box.appendChild(el('div', 'flow-empty', '（尚未打开工程）'));
@@ -2552,20 +2582,21 @@
       $('layerActive').textContent = '当前：—';
       return;
     }
-    const list = (pj.layers || []).slice().sort((a, b) => b.index - a.index); // 顶层在上
-    if (!list.length) box.appendChild(el('div', 'flow-empty', '（没有图层）'));
-    $('layerMeta').textContent = `${pj.layers.length} 层`;
-    const activeName = (pj.layers.find((l) => l.id === pj.activeLayer) || {}).name || '—';
+    const list = countable.slice().sort((a, b) => animated ? a.index - b.index : b.index - a.index);
+    if (!list.length) box.appendChild(el('div', 'flow-empty', '（没有' + subject + '）'));
+    $('layerMeta').textContent = isPixel() ? `${list.length} / ${pixel.layerLimit} ${animated ? '帧' : '层'}` : `${list.length} 层`;
+    const activeName = activeLayer?.name || '—';
     $('layerActive').textContent = `当前：${activeName}`;
 
     list.forEach((l) => {
       const visible = isPixel() ? pixel.visibleForPreview(l) : l.visible;
-      const row = el('div', 'layer-row' + (l.id === pj.activeLayer ? ' active' : '') + (visible ? '' : ' hidden-layer'));
+      const row = el('div', 'layer-row' + (l.id === activeID ? ' active' : '') + (visible ? '' : ' hidden-layer'));
       row.dataset.id = l.id;
 
       // 眼睛：可见度
       const eye = el('span', 'eye' + (visible ? '' : ' off'), visible ? '◉' : '○');
-      eye.title = (visible ? '隐藏图层' : '显示图层') + (isPixel() && S.running ? '（仅本地预览）' : '');
+      eye.title = (animated ? (visible ? '播放时跳过此帧' : '播放时显示此帧') : (visible ? '隐藏图层' : '显示图层'))
+        + (isPixel() && S.running ? '（仅本地预览）' : '');
       eye.addEventListener('click', (ev) => {
         ev.stopPropagation();
         layerOp('visible', { id: l.id, visible: !visible });
@@ -2586,13 +2617,14 @@
         startRenameLayer(row, l);
       });
 
-      const blend = el('span', 'blend', l.blend && l.blend !== 'normal' ? l.blend : '');
+      const blend = el('span', 'blend', animated ? (l.delayMult > 1 ? '×' + l.delayMult : '')
+        : (l.blend && l.blend !== 'normal' ? l.blend : ''));
       const idx = el('span', 'idx', String(l.index));
 
       row.append(eye, lock, nm, blend, idx);
       row.addEventListener('click', () => {
         S.pickedLayer = l.id;
-        if (l.id !== pj.activeLayer) layerOp('active', { id: l.id });
+        if (l.id !== activeID) layerOp('active', { id: l.id });
       });
       box.appendChild(row);
     });
@@ -2628,15 +2660,20 @@
     if (layerState.busy) return;
     if (isPixel()) {
       if (!hasWorkspaceProject()) return;
+      const animated = Boolean(pixelAnimation());
       if (S.running) {
         if (op === 'visible') {
           pixel.previewLayer(payload.id, payload.visible);
           renderLayers();
-        } else if (op !== 'active') toast('请在生成结束后编辑图层', true);
+        } else if (op !== 'active') toast('请在生成结束后编辑' + (animated ? '帧' : '图层'), true);
         return;
       }
-      await pixel.mutate('/api/layers/ops', { op, ...payload });
-      return;
+      if (animated) {
+        const { id, ...props } = payload;
+        const action = op === 'index' ? 'reorder' : op;
+        return pixel.mutate('/api/pixel/frames', { action, frameId: id, sourceFrameId: op === 'duplicate' ? id : undefined, ...props });
+      }
+      return pixel.mutate('/api/layers/ops', { op, ...payload });
     }
     layerState.busy = true;
     try {
@@ -2652,8 +2689,8 @@
   // 当前选中图层
   function pickedLayer() {
     if (!hasWorkspaceProject()) return null;
-    const id = S.pickedLayer || S.project.activeLayer;
-    return (S.project.layers || []).find((l) => l.id === id) || null;
+    const id = S.pickedLayer || projectActiveEntry();
+    return projectEntries().find((l) => l.id === id) || null;
   }
 
   // 刷新工程快照（模型改过图层后调用）
@@ -2669,8 +2706,9 @@
   // 图层按钮
   $('btnAddLayer').addEventListener('click', async () => {
     if (!hasWorkspaceProject()) { toast('请先打开工程', true); return; }
-    await layerOp('add', { name: '新图层' });
-    addLog('LOG', '新建图层');
+    const animated = Boolean(pixelAnimation());
+    await layerOp('add', animated ? {} : { name: '新图层' });
+    addLog('LOG', animated ? '新建空帧' : '新建图层');
   });
   $('pixelLayerOpacity').addEventListener('change', () => {
     const layer = pickedLayer();
@@ -2685,25 +2723,33 @@
     const layer = pickedLayer();
     if (layer) layerOp('duplicate', { id: layer.id });
   });
+  $('pixelFrameDelay').addEventListener('change', (event) => {
+    const frame = pickedLayer();
+    const delayMult = Number(event.target.value);
+    if (!frame) return;
+    if (!Number.isInteger(delayMult) || delayMult < 1 || delayMult > 8) { event.target.value = frame.delayMult || 1; return; }
+    layerOp('delayMult', { id: frame.id, delayMult });
+  });
   $('btnLayerDel').addEventListener('click', () => {
     const l = pickedLayer();
-    if (!l) { toast('没有选中图层', true); return; }
+    const subject = pixelAnimation() ? '帧' : '图层';
+    if (!l) { toast('没有选中' + subject, true); return; }
     confirmBox({
-      title: '删除图层',
-      text: `确定删除「${l.name}」？该图层的文件会一并删除。`,
+      title: '删除' + subject,
+      text: `确定删除「${l.name}」？`,
       ok: '删除',
-      onOk: async () => { await layerOp('delete', { id: l.id }); addLog('LOG', `删除图层：${l.name}`); },
+      onOk: async () => { await layerOp('delete', { id: l.id }); addLog('LOG', `删除${subject}：${l.name}`); },
     });
   });
   $('btnLayerUp').addEventListener('click', async () => {
     const l = pickedLayer();
     if (!l) return;
-    await layerOp('index', { id: l.id, index: l.index + 1 });
+    await layerOp('index', { id: l.id, index: pixelAnimation() ? Math.max(1, l.index - 1) : l.index + 1 });
   });
   $('btnLayerDown').addEventListener('click', async () => {
     const l = pickedLayer();
     if (!l) return;
-    await layerOp('index', { id: l.id, index: Math.max(1, l.index - 1) });
+    await layerOp('index', { id: l.id, index: pixelAnimation() ? l.index + 1 : Math.max(1, l.index - 1) });
   });
 
   // ── 生成方式开关：点击 / 拖动 / 键盘 ─────────────────────
@@ -2955,13 +3001,17 @@
     });
   });
   $('pixelQuickNew').addEventListener('click', () => {
-    projectAction('/api/project/open', { mode: 'quick', engine: 'pixel', fresh: false }, '已打开临时像素画板');
+    projectAction('/api/project/open', {
+      mode: 'quick', engine: 'pixel', fresh: false,
+    }, '已打开临时像素画板');
   });
 
   // 方框二：新建项目 → 只填名字，确认后弹文件夹选择器选位置
   $('btnProjNew').addEventListener('click', () => {
     $('projNameInput').value = '';
     if (isPixel()) {
+      $('pixelProjectMode').value = pixelAnimation() ? 'anim' : 'static';
+      updateNewPixelLimit();
       $('pixelProjectWidth').value = $('pixelWidth').value;
       $('pixelProjectHeight').value = $('pixelHeight').value;
     }
@@ -2971,6 +3021,11 @@
   $('projNameInput').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); $('btnProjCreate').click(); }
   });
+  function updateNewPixelLimit() {
+    const limit = $('pixelProjectMode').value === 'anim' ? 512 : 2048;
+    $('pixelProjectWidth').max = $('pixelProjectHeight').max = String(limit);
+  }
+  $('pixelProjectMode').addEventListener('change', updateNewPixelLimit);
   $('btnProjCreate').addEventListener('click', async () => {
     const name = $('projNameInput').value.trim();
     if (!name) {
@@ -2980,13 +3035,11 @@
     }
     const width = Number($('pixelProjectWidth').value);
     const height = Number($('pixelProjectHeight').value);
-    if (isPixel() && ![width, height].every((value) => Number.isInteger(value) && value >= 8 && value <= 512)) {
-      toast('像素画布的宽和高都须为 8–512 的整数', true);
-      return;
-    }
+    const pixelMode = $('pixelProjectMode').value;
+    if (isPixel() && !pixel.checkDimensions(width, height, pixelMode)) return;
     const dir = await pickFolder('选择「' + name + '」的存放位置');
     if (!dir) return; // 取消选择就留在原地
-    const request = isPixel() ? { name, dir, engine: 'pixel', pixel: { width, height } } : { name, dir };
+    const request = isPixel() ? { name, dir, engine: 'pixel', pixelMode, pixel: { width, height } } : { name, dir };
     projectAction('/api/project/create', request, '已新建项目 ' + name);
   });
 
@@ -3092,7 +3145,10 @@
       openProjectModal();
       return;
     }
-    if (pixelRun && !pixel.editable) return;
+    if (pixelRun) {
+      pixel.stopPlayback();
+      if (!pixel.editable) return;
+    }
     if (pixelRun && pixelMode === 'quantize' && !pixel.canDraft) {
       toast('请先添加主图，或选择另一条创作路径', true);
       return;

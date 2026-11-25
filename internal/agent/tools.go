@@ -136,7 +136,7 @@ func toolSpecs(deps Deps) []llm.ToolSpec {
 	}
 
 	if deps.Pixel != nil {
-		return append(pixelToolSpecs(), specs...)
+		return append(pixelToolSpecs(deps.Pixel.CanvasInfo().Mode == pixelAnimMode), specs...)
 	}
 	specs = append([]llm.ToolSpec{
 		emitSVGSpec(layers),

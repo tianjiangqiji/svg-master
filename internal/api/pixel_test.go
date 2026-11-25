@@ -17,7 +17,9 @@ import (
 	"testing"
 	"time"
 
+	"svg-master/internal/agent"
 	"svg-master/internal/config"
+	"svg-master/internal/pixel"
 	"svg-master/internal/project"
 )
 
@@ -274,4 +276,147 @@ func TestPixelAbortConfirmsNoLateWrites(t *testing.T) {
 	call("POST", "/api/chat/abort", map[string]any{"session": "pixel", "runId": "r2", "wait": true}, 200)
 	chatFields["runId"] = "r2"
 	call("POST", "/api/chat", pixelTestVersion(snap, chatFields), http.StatusConflict)
+}
+
+func TestLargePixelLayerTransportAndModelSnapshot(t *testing.T) {
+	s, srv := newTestAPI(t, "http://127.0.0.1:1")
+	call := func(method, route string, body any, status int) []byte {
+		return pixelTestRequest(t, srv, method, route, body, status)
+	}
+	snap := pixelTestSnapshot(t, call("POST", "/api/project/create", map[string]any{
+		"engine": "pixel", "name": "大画布", "dir": t.TempDir(),
+		"pixel": map[string]int{"width": 2048, "height": 1024},
+	}, 200))
+	img := image.NewNRGBA(image.Rect(0, 0, 2048, 1024))
+	var seed uint32 = 0x12345678
+	for i := range img.Pix {
+		seed ^= seed << 13
+		seed ^= seed >> 17
+		seed ^= seed << 5
+		img.Pix[i] = byte(seed)
+	}
+	var raw bytes.Buffer
+	if err := png.Encode(&raw, img); err != nil || raw.Len() <= 2<<20 {
+		t.Fatalf("large PNG fixture: %d bytes, %v", raw.Len(), err)
+	}
+	rgba := base64.StdEncoding.EncodeToString([]byte{1, 2, 3, 255})
+	call("PUT", "/api/pixel/layer", pixelTestVersion(snap, map[string]any{
+		"layerId": snap.Active, "rgbaBase64": rgba,
+	}), http.StatusBadRequest)
+	snap = pixelTestSnapshot(t, call("PUT", "/api/pixel/layer", pixelTestVersion(snap, map[string]any{
+		"layerId": snap.Active, "pngBase64": base64.StdEncoding.EncodeToString(raw.Bytes()),
+	}), 200))
+	layer := call("GET", "/api/pixel/layer?layerId="+snap.Active, nil, 200)
+	imgLayer, err := png.Decode(bytes.NewReader(layer))
+	if err != nil || imgLayer.Bounds() != img.Bounds() || imgLayer.At(1024, 512) != img.At(1024, 512) {
+		t.Fatalf("full layer PNG failed to round trip: %v", err)
+	}
+	bridge := pixelAgentBridge{ctx: t.Context(), server: s, project: s.Project(), emit: func(event agent.Event) {
+		data := event.Pixel.(map[string]any)
+		if data["pngBase64"] == nil || data["rgbaBase64"] != nil || data["region"] != nil {
+			t.Error("large SSE update must send a full PNG")
+		}
+	}}
+	bridge.changed(snap.Active, &pixel.Rect{W: 2048, H: 1024})
+	preview, err := bridge.ModelCompositePNG()
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := png.DecodeConfig(base64.NewDecoder(base64.StdEncoding, strings.NewReader(preview)))
+	if err != nil || config.Width != 1024 || config.Height != 512 {
+		t.Fatalf("model image dimensions = %dx%d, %v", config.Width, config.Height, err)
+	}
+}
+
+func TestPixelAnimationChatFramesAndCheckpoints(t *testing.T) {
+	type fakeTool struct{ name, args string }
+	steps := []fakeTool{
+		{"pixel_anim_info", "{}"},
+		{"pixel_draw", `{"ops":[{"op":"pixel","x":1,"y":2,"color":"#FF477E"}]}`},
+		{"pixel_frame_op", `{"action":"duplicate"}`},
+		{"pixel_frame_op", `{"action":"shift","dx":3,"dy":2,"wrap":true}`},
+		{"pixel_inspect", `{"mode":"onion"}`},
+		{"pixel_inspect", `{"mode":"filmstrip"}`},
+	}
+	var count atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		n := int(count.Add(1)) - 1
+		w.Header().Set("Content-Type", "text/event-stream")
+		if n == 0 && (!bytes.Contains(raw, []byte("pixel_anim_info")) || bytes.Contains(raw, []byte("pixel_create_layer"))) {
+			t.Error("animation chat received the wrong tools")
+		}
+		if n >= 5 && !bytes.Contains(raw, []byte("data:image/png;base64,")) {
+			t.Error("animation inspection image missing from tool result")
+		}
+		if n < len(steps) {
+			id := fmt.Sprintf("f%d", n)
+			data, _ := json.Marshal(map[string]any{
+				"type": "response.output_item.done", "output_index": 0,
+				"item": map[string]any{"type": "function_call", "id": id, "call_id": id,
+					"name": steps[n].name, "arguments": steps[n].args},
+			})
+			fmt.Fprintf(w, "data: %s\n\n", data)
+		} else {
+			fmt.Fprint(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"动画完成\"}\n\n")
+		}
+		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+	}))
+	defer upstream.Close()
+	s, srv := newTestAPI(t, upstream.URL)
+	settings := s.store.Settings()
+	vision := true
+	settings.Providers[0].ModelCaps = map[string]config.PartialCaps{"test": {Vision: &vision}}
+	if err := s.store.Save(settings); err != nil {
+		t.Fatal(err)
+	}
+	call := func(method, route string, body any, status int) []byte {
+		return pixelTestRequest(t, srv, method, route, body, status)
+	}
+	snap := pixelTestSnapshot(t, call("POST", "/api/project/open", map[string]any{
+		"engine": "pixel", "mode": "quick", "pixelMode": "anim", "fresh": true,
+	}, 200))
+	first := snap.Pixel.Anim.ActiveFrameID
+	stream := call("POST", "/api/chat", pixelTestVersion(snap, map[string]any{
+		"engine": "pixel", "pixelMode": "anim", "pixelDraftMode": "prompt", "prompt": "制作像素动画",
+		"session": "pixel", "runId": "animation",
+	}), 200)
+	if !bytes.Contains(stream, []byte(`"kind":"done"`)) || !bytes.Contains(stream, []byte(`"frameId":"`+first+`"`)) {
+		t.Fatalf("animation stream did not finish or update the addressed frame: %.1600s", stream)
+	}
+	snap = pixelTestSnapshot(t, call("GET", "/api/project", nil, 200))
+	if !snap.Pixel.ModeLocked || snap.Empty || len(snap.Pixel.Anim.Frames) != 2 || snap.Pixel.Anim.ActiveFrameID == first {
+		t.Fatalf("animation was not saved: %+v", snap.Pixel.Anim)
+	}
+	call("POST", "/api/pixel/frames", pixelTestVersion(snap, map[string]any{
+		"action": "modeSwitch", "pixelMode": "static", "flatten": true,
+	}), http.StatusConflict)
+	snap = pixelTestSnapshot(t, call("POST", "/api/pixel/frames", pixelTestVersion(snap, map[string]any{
+		"action": "fps", "fps": 12,
+	}), 200))
+	framePNG := call("GET", "/api/pixel/export?format=png&frameId="+snap.Pixel.Anim.ActiveFrameID, nil, 200)
+	frame, err := png.Decode(bytes.NewReader(framePNG))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, oldAlpha := frame.At(1, 2).RGBA()
+	_, _, _, newAlpha := frame.At(4, 4).RGBA()
+	if oldAlpha != 0 || newAlpha != 0xffff {
+		t.Fatalf("frame copy/shift failed: before alpha=%d, after alpha=%d", oldAlpha, newAlpha)
+	}
+	for _, action := range []string{"undo", "redo"} {
+		snap = pixelTestSnapshot(t, call("POST", "/api/pixel/checkpoint", pixelTestVersion(snap, map[string]any{"action": action}), 200))
+		if (len(snap.Pixel.Anim.Frames) == 1) != (action == "undo") || snap.Pixel.Anim.FPS != 12 {
+			t.Fatalf("%s restored wrong frames or playback settings: %+v", action, snap.Pixel.Anim)
+		}
+	}
+	call("POST", "/api/project/open", map[string]any{
+		"engine": "pixel", "mode": "quick", "pixelMode": "static",
+	}, http.StatusConflict)
+	reopened := pixelTestSnapshot(t, call("POST", "/api/project/open", map[string]any{
+		"engine": "pixel", "mode": "quick",
+	}, 200))
+	if reopened.ProjectID != snap.ProjectID || !reopened.Dirty || len(reopened.Pixel.Anim.Frames) != 2 {
+		t.Fatalf("reopening a running animation draft lost the project state: %+v", reopened)
+	}
 }

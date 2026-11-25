@@ -239,18 +239,39 @@ func (s *Server) openQuick(fresh bool) error {
 	return nil
 }
 
-func (s *Server) openPixelQuick(fresh bool) error {
+func (s *Server) openPixelQuick(fresh bool, modes ...string) error {
+	current := s.Project()
+	if current != nil && current.Kind() == project.KindQuick && current.Engine() == project.EnginePixel {
+		if fresh {
+			if err := current.ResetPixel(modes...); err != nil {
+				return err
+			}
+			s.proj.mu.Lock()
+			s.proj.dirty = false
+			s.proj.mu.Unlock()
+		} else if len(modes) > 0 && modes[0] != "" {
+			if err := current.PixelSetMode(modes[0], false); err != nil {
+				return err
+			}
+			s.markPixelDirty(current)
+		}
+		return nil
+	}
 	p, err := project.OpenQuickPixel(s.store.Dir(), false)
 	if err != nil {
 		return err
 	}
-	if err := s.closeProject(false); err != nil {
-		return err
-	}
 	if fresh {
-		if err := p.ResetPixel(); err != nil {
+		if err := p.ResetPixel(modes...); err != nil {
 			return err
 		}
+	} else if len(modes) > 0 && modes[0] != "" {
+		if err := p.PixelSetMode(modes[0], false); err != nil {
+			return err
+		}
+	}
+	if err := s.closeProject(false); err != nil {
+		return err
 	}
 	s.proj.mu.Lock()
 	s.proj.p, s.proj.mode, s.proj.dirty = p, config.ModeQuick, false
@@ -277,6 +298,13 @@ func (s *Server) openProject(dir string, expected ...string) error {
 	}
 	if len(expected) > 0 && expected[0] != "" && p.Engine() != expected[0] {
 		return fmt.Errorf("该工程属于 %s 工作区，请在对应工作区打开", p.Engine())
+	}
+	if len(expected) > 1 && expected[1] != "" {
+		doc := p.Meta()
+		if doc.Pixel == nil || (doc.Pixel.Mode != expected[1] &&
+			!(doc.Pixel.Mode == "" && expected[1] == project.PixelModeStatic)) {
+			return fmt.Errorf("该工程保存的像素画模式与请求不一致")
+		}
 	}
 	old := s.Project()
 	purgeQuick := old != nil && old.Dir() != p.Dir() && old.Engine() == project.EngineSVG && p.Engine() == project.EngineSVG

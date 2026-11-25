@@ -266,6 +266,9 @@ func (e *Engine) run(ctx context.Context, t Task) (Stats, error) {
 			return Stats{}, errors.New("请先在像素画布上创建选区")
 		}
 		system = pixelSystemPrompt(e.deps.Vision)
+		if info.Mode == pixelAnimMode {
+			system = pixelAnimSystemPrompt(e.deps.Vision)
+		}
 		if extra := strings.TrimSpace(t.System); extra != "" {
 			system += "\n\n" + extra
 		}
@@ -486,6 +489,7 @@ func (e *Engine) run(ctx context.Context, t Task) (Stats, error) {
 			} else {
 				if oc.PixelChanged {
 					pixelChanged = true
+					pixelInspected = false
 				}
 				if pixelChanged && call.Name == ToolPixelInspect {
 					pixelInspected = true

@@ -62,6 +62,7 @@
       <label class="pixel-scale" data-pixel-only><span class="pixel-visually-hidden">PNG 导出倍率</span><select id="pixelExportScale" title="PNG 导出倍率"><option>1×</option><option>2×</option><option>4×</option><option>8×</option><option>16×</option></select></label>
       <button class="btn" id="pixelExportPNG" type="button" data-pixel-only>导出 PNG</button>
       <button class="btn" id="pixelExportSVG" type="button" data-pixel-only title="导出保持硬边缘的 SVG">导出 SVG</button>
+      <button class="btn hidden" id="pixelExportGIF" type="button" data-pixel-only>导出 GIF</button>
       <button class="btn primary" id="pixelSave" type="button" data-pixel-only>保存工程</button>
     </div>
     <div class="model-menu hidden" id="modelMenu"></div>
@@ -120,17 +121,21 @@
           <input type="file" id="fileInput" accept="image/*" multiple hidden />
         </div>
         <div class="pixel-inputs" data-pixel-only>
+          <label class="fld"><span>像素形态</span>
+            <select id="pixelMode"><option value="static">静态多层</option><option value="anim">动图（单层多帧）</option></select>
+          </label>
           <label class="fld"><span>像素画布</span>
             <select id="pixelSizePreset" aria-label="尺寸预设">
               <option value="">自定义</option><option>16×16</option><option>24×24</option><option>32×32</option>
               <option>48×48</option><option>64×64</option><option>96×96</option><option>128×128</option>
               <option>192×192</option><option>256×256</option><option>320×240</option><option>512×512</option>
+              <option>768×768</option><option>1024×1024</option>
             </select>
           </label>
           <div class="pixel-size">
-            <input id="pixelWidth" type="number" min="8" max="512" step="1" value="32" aria-label="宽度" />
+            <input id="pixelWidth" type="number" min="8" max="2048" step="1" value="32" aria-label="宽度" />
             <span>×</span>
-            <input id="pixelHeight" type="number" min="8" max="512" step="1" value="32" aria-label="高度" />
+            <input id="pixelHeight" type="number" min="8" max="2048" step="1" value="32" aria-label="高度" />
           </div>
           <div class="pixel-size">
             <select id="pixelResizeMode" aria-label="调整画布方式"><option value="crop">从左上裁切 / 补透明</option><option value="resample">最近邻缩放</option></select>
@@ -214,6 +219,13 @@
           <label id="pixelOverlayField">主图叠加 <input id="pixelOverlayOpacity" type="range" min="0" max="80" value="0" /></label>
           <button class="btn sm" id="pixelCompare" type="button" aria-pressed="false">分屏对照</button>
         </div>
+        <div class="canvas-toolbar pixel-toolbar hidden" id="pixelAnimBar" role="toolbar" aria-label="像素动画">
+          <button class="btn sm" id="pixelAnimPlay" type="button" aria-label="播放">▶</button>
+          <label>帧率 <input id="pixelAnimFPS" aria-label="帧率" type="number" min="1" max="30" value="8" /></label>
+          <label class="chk"><input id="pixelAnimLoop" type="checkbox" checked /><span>循环</span></label>
+          <label class="chk"><input id="pixelAnimOnion" type="checkbox" /><span>上一帧洋葱皮</span></label>
+          <span class="mono" id="pixelAnimPosition">1 / 1</span>
+        </div>
         <div class="pixel-board">
           <div class="pixel-tools" role="toolbar" aria-label="绘图工具">
             <button class="btn sm" type="button" data-pixel-tool="pan" title="平移（H 或空格拖动）">平移</button>
@@ -233,6 +245,7 @@
               <canvas id="pixelRulerX" class="pixel-ruler-x" aria-hidden="true"></canvas>
               <canvas id="pixelRulerY" class="pixel-ruler-y" aria-hidden="true"></canvas>
               <div class="pixel-stage" id="pixelStage">
+                <canvas id="pixelOnion" aria-hidden="true"></canvas>
                 <canvas id="pixelCanvas" aria-label="分层像素画"></canvas>
                 <canvas id="pixelOverlay" aria-hidden="true"></canvas>
                 <canvas id="pixelDecoration" aria-hidden="true"></canvas>
@@ -340,7 +353,7 @@
 
       <div class="rblock layers" id="layerBlock">
         <div class="rhead" data-rblock="layerBlock" title="点击折叠 / 展开">
-          <i class="rchev">▾</i><span>图层</span>
+          <i class="rchev">▾</i><span id="layerBlockTitle">图层</span>
           <span class="spacer"></span>
           <span class="muted tiny" id="layerMeta">—</span>
           <button class="mini" id="btnAddLayer" type="button" title="新建图层">＋</button>
@@ -368,6 +381,9 @@
               <option value="difference">差值</option><option value="exclusion">排除</option>
               <option value="hue">色相</option><option value="saturation">饱和度</option><option value="color">颜色</option><option value="luminosity">明度</option>
             </select></label>
+          </div>
+          <div class="pixel-frame-properties hidden" id="pixelFrameProperties">
+            <label>帧时长倍数 <input id="pixelFrameDelay" aria-label="帧时长倍数" type="number" min="1" max="8" value="1" /></label>
           </div>
         </div>
       </div>
@@ -579,9 +595,12 @@
       <label class="fld"><span>项目名</span>
         <input id="projNameInput" spellcheck="false" placeholder="例如 海报-01" />
       </label>
+      <label class="fld" data-pixel-only><span>像素形态</span>
+        <select id="pixelProjectMode"><option value="static">静态多层</option><option value="anim">动图（单层多帧）</option></select>
+      </label>
       <div class="pixel-size" data-pixel-only>
-        <label>宽 <input id="pixelProjectWidth" type="number" min="8" max="512" step="1" value="32" /></label>
-        <label>高 <input id="pixelProjectHeight" type="number" min="8" max="512" step="1" value="32" /></label>
+        <label>宽 <input id="pixelProjectWidth" type="number" min="8" max="2048" step="1" value="32" /></label>
+        <label>高 <input id="pixelProjectHeight" type="number" min="8" max="2048" step="1" value="32" /></label>
       </div>
       <div class="row2 even">
         <button class="btn primary" id="btnProjCreate" type="button">确认</button>

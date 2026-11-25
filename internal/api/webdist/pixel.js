@@ -13,7 +13,12 @@
   };
   const shapes = ['line', 'rectangle', 'ellipse'];
   const zero = [0, 0, 0, 0];
-  const undoBudget = 32 * 1024 * 1024;
+  const undoBudget = 128 * 1024 * 1024;
+  const tileSize = 128;
+  const partialUploadBytes = 2 * 1024 * 1024;
+  const maxCanvasSize = 2048;
+  const maxAnimationSize = 512;
+  const maxFrameCount = 32;
   const minZoom = 0.125;
   const maxZoom = 64;
   const $ = (id) => document.getElementById(id);
@@ -26,6 +31,13 @@
   const area = (a, b) => ({
     x: Math.min(a.x, b.x), y: Math.min(a.y, b.y),
     w: Math.abs(a.x - b.x) + 1, h: Math.abs(a.y - b.y) + 1,
+  });
+  const union = (a, b) => area(
+    { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y) },
+    { x: Math.max(a.x + a.w, b.x + b.w) - 1, y: Math.max(a.y + a.h, b.y + b.h) - 1 },
+  );
+  const encodePNG = (canvas) => new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('无法编码图层 PNG')), 'image/png');
   });
   const canvas2D = (w, h) => {
     const canvas = document.createElement('canvas');
@@ -82,7 +94,7 @@
     }
   }
 
-  window.createPixelStudio = ({ api, toast, applyProject, isActive, openProject, token }) => {
+  window.createPixelStudio = ({ api, toast, applyProject, isActive, openProject, confirm, token }) => {
     let project;
     let layers = new Map();
     let boardWidth = 0;
@@ -94,7 +106,9 @@
     let loading = false;
     let syncTimer = 0;
     let paintFrame = 0;
+    let scrollFrame = 0;
     let compositeDirty = true;
+    let compositeRegion = null;
     let assetKey = '';
     let overlayImage = null;
     let focusSlot = 'main';
@@ -116,6 +130,10 @@
     let compare = false;
     let lastHighlight = null;
     let activeID = '';
+    let playing = false;
+    let playbackID = '';
+    let playbackTimer = 0;
+    let exportingGIF = false;
     let primary = '#ffffff';
     let secondary = '#000000';
     let colorsDirty = false;
@@ -130,11 +148,15 @@
     const compositeCtx = composite.getContext('2d', { willReadFrequently: true });
     const decoration = $('pixelDecoration');
     const overlay = $('pixelOverlay');
+    const onion = $('pixelOnion');
     const buttons = [...document.querySelectorAll('[data-pixel-tool]')];
     const dimensions = () => [Number($('pixelWidth').value), Number($('pixelHeight').value)];
     const hasBoard = () => Boolean(project?.open);
-    const layerMetadata = (id = activeID) => project?.layers?.find((layer) => layer.id === id);
-    const ownsEdits = () => !running && !busy && !loading;
+    const animation = (board = project) => board?.pixel?.anim;
+    const isAnimated = () => project?.pixel?.mode === 'anim';
+    const entries = (board = project) => animation(board)?.frames || board?.layers || [];
+    const layerMetadata = (id = activeID) => entries().find((layer) => layer.id === id);
+    const ownsEdits = () => !running && !busy && !loading && !playing;
     const visibleForPreview = (layer) => previewVisibility.get(layer.id) ?? layer.visible;
     const projectKey = () => project?.projectId || '';
     const requestWithRevision = (body = {}) => ({ projectId: projectKey(), revision: project?.revision, ...body });
@@ -158,6 +180,7 @@
 
     function updateControls() {
       const isOpen = hasBoard();
+      const animated = isAnimated();
       $('pixelSheet').classList.toggle('hidden', !isOpen);
       $('pixelEmpty').classList.toggle('hidden', isOpen);
       const editable = isOpen && ownsEdits();
@@ -168,6 +191,13 @@
       $('pixelQuantize').disabled = !editable || !project.pixel.mainImage;
       $('pixelResize').disabled = !editable;
       $('pixelDraft').disabled = !editable;
+      const mode = $('pixelMode');
+      mode.disabled = !editable || !!project?.pixel?.modeLocked;
+      mode.title = project?.pixel?.modeLocked ? '开始 AI 动图后，清空或新建工程即可切换形态' : '';
+      mode.value = animated ? 'anim' : 'static';
+      const maxSize = animated ? maxAnimationSize : maxCanvasSize;
+      $('pixelWidth').max = $('pixelHeight').max = String(maxSize);
+      for (const option of $('pixelSizePreset').options) option.disabled = parseInt(option.value, 10) > maxSize;
       $('pixelOverlayField').classList.toggle('hidden', !project?.pixel?.mainImage);
       $('pixelCompare').disabled = !project?.pixel?.mainImage && !project?.pixel?.refImages?.length;
       $('pixelMainDrop').disabled = !editable;
@@ -175,13 +205,40 @@
       for (const id of ['pixelExportPNG', 'pixelExportSVG', 'pixelSave', 'pixelPalettePreset', 'pixelPaletteAdd', 'pixelPaletteExtract']) {
         $(id).disabled = !editable;
       }
+      $('pixelExportPNG').textContent = animated ? '导出当前帧 PNG' : '导出 PNG';
+      $('pixelExportSVG').classList.toggle('hidden', animated);
+      $('pixelExportGIF').classList.toggle('hidden', !animated);
+      $('pixelExportGIF').disabled = !editable || !visibleFrames().length;
+      $('pixelExportGIF').textContent = exportingGIF ? '正在编码…' : '导出 GIF';
+      $('pixelAnimBar').classList.toggle('hidden', !animated);
+      $('pixelAnimPlay').disabled = !animated || running || busy || loading || !visibleFrames().length;
+      $('pixelAnimFPS').disabled = $('pixelAnimLoop').disabled = !editable;
+      $('pixelAnimOnion').disabled = !animated || playing || running;
+      const play = $('pixelAnimPlay');
+      play.textContent = playing ? '❚❚' : '▶';
+      play.setAttribute('aria-label', playing ? '暂停' : '播放');
+      for (const option of $('pixelExportScale').options) {
+        const scale = parseInt(option.value, 10);
+        const width = boardWidth * scale;
+        const height = boardHeight * scale;
+        option.disabled = animated
+          ? scale > 8 || Math.max(width, height) > 640
+          : Math.max(width, height) > 8192 || width * height > 64 * 1024 * 1024;
+      }
+      if ($('pixelExportScale').selectedOptions[0]?.disabled) $('pixelExportScale').value = '1×';
+      if (animated) {
+        const shown = playbackID || activeID;
+        const order = playing ? visibleFrames() : [...entries()].sort((a, b) => a.index - b.index);
+        const index = order.findIndex((frame) => frame.id === shown);
+        $('pixelAnimPosition').textContent = (index + 1) + ' / ' + order.length;
+      }
       $('pixelSelectionInfo').textContent = selection
         ? `选区 ${selection.x},${selection.y} · ${selection.w}×${selection.h}` : '';
       const layer = layerMetadata();
       $('pixelStatus').textContent = remoteError || (running ? 'AI 正在绘制，可以平移缩放。'
         : loading ? '正在加载图层…' : syncing ? '正在同步笔触…' : pending.length ? '笔触等待同步'
           : layer?.locked ? `「${layer.name}」已锁定` : '');
-      const canPan = tool === 'pan' || spaceDown || running;
+      const canPan = tool === 'pan' || spaceDown || running || playing;
       viewport.style.cursor = stroke?.tool === 'pan' ? 'grabbing' : canPan ? 'grab' : '';
       stage.style.cursor = viewport.style.cursor || (tool === 'move' ? 'move' : 'crosshair');
     }
@@ -198,31 +255,104 @@
       updateControls();
     }
 
-    function drawRulers(pixelWidth, pixelHeight) {
+    function visibleFrames() {
+      return (animation()?.frames || []).filter((frame) => visibleForPreview(frame)).sort((a, b) => a.index - b.index);
+    }
+
+    function scheduleNextFrame() {
+      const order = visibleFrames();
+      const index = order.findIndex((frame) => frame.id === playbackID);
+      const frame = order[index];
+      if (!playing || !frame) return stopPlayback();
+      const { fps, loop } = animation();
+      playbackTimer = setTimeout(() => {
+        if (index + 1 >= order.length && !loop) { stopPlayback(true); return; }
+        playbackID = order[(index + 1) % order.length].id;
+        updateControls();
+        schedulePaint();
+        scheduleNextFrame();
+      }, 1000 / fps * (frame.delayMult || 1));
+    }
+
+    function stopPlayback(hold = false) {
+      clearTimeout(playbackTimer);
+      if (!playing && !playbackID) return;
+      playing = false;
+      if (!hold) playbackID = '';
+      updateControls();
+      schedulePaint();
+    }
+
+    async function togglePlayback() {
+      if (playing) {
+        const frameId = playbackID;
+        stopPlayback(true);
+        if (frameId !== activeID) await mutate('/api/pixel/frames', { action: 'active', frameId }, 'POST', { keepPlayback: true });
+        return;
+      }
+      if (!ownsEdits()) return;
+      try { await flush(); } catch (error) { displayError(error); return; }
+      const frame = visibleFrames()[0];
+      if (!isActive() || !isAnimated() || !frame || running) return;
+      playbackID = frame.id;
+      playing = true;
+      updateControls();
+      schedulePaint();
+      scheduleNextFrame();
+    }
+
+    function viewWindow() {
+      const box = stage.getBoundingClientRect();
+      const view = viewport.getBoundingClientRect();
+      const left = Math.max(0, Math.floor(view.left - box.left));
+      const top = Math.max(0, Math.floor(view.top - box.top));
+      const right = Math.min(box.width, Math.ceil(view.left + viewport.clientWidth - box.left));
+      const bottom = Math.min(box.height, Math.ceil(view.top + viewport.clientHeight - box.top));
+      return { box, view, left, top, width: Math.max(0, right - left), height: Math.max(0, bottom - top),
+        scaleX: box.width / boardWidth, scaleY: box.height / boardHeight };
+    }
+
+    function drawRulers(region) {
+      const { box, view, left, top, width, height, scaleX, scaleY } = region;
+      const sheetBounds = sheet.getBoundingClientRect();
       const color = getComputedStyle(viewport).getPropertyValue('--muted').trim();
-      const step = [1, 2, 4, 8, 16, 32, 64, 128, 256].find((n) => n * zoom >= 28) || 256;
+      const step = [1, 2, 4, 8, 16, 32, 64, 128, 256].find((n) => n * zoom >= 30) || 256;
       const rw = $('pixelRulerX');
       const rh = $('pixelRulerY');
-      rw.width = Math.min(4096, pixelWidth);
+      rw.width = width;
       rw.height = 24;
       rh.width = 24;
-      rh.height = Math.min(4096, pixelHeight);
-      rw.style.width = pixelWidth + 'px';
-      rh.style.height = pixelHeight + 'px';
+      rh.height = height;
+      rw.style.left = box.left - sheetBounds.left + left + 'px';
+      rw.style.top = Math.max(view.top, box.top - 24) - sheetBounds.top + 'px';
+      rh.style.left = Math.max(view.left, box.left - 24) - sheetBounds.left + 'px';
+      rh.style.top = box.top - sheetBounds.top + top + 'px';
       const xctx = rw.getContext('2d');
       const yctx = rh.getContext('2d');
+      if (!width || !height) return;
       xctx.font = yctx.font = '9px monospace';
       xctx.fillStyle = yctx.fillStyle = color || '#888';
-      for (let x = 0; x < boardWidth; x += step) {
-        const dx = Math.floor(x * rw.width / boardWidth);
+      for (let x = Math.ceil(left / scaleX / step) * step; x < boardWidth && x * scaleX <= left + width; x += step) {
+        const dx = Math.round(x * scaleX - left);
         xctx.fillRect(dx, 18, 1, 6);
         xctx.fillText(String(x), dx + 2, 15);
       }
-      for (let y = 0; y < boardHeight; y += step) {
-        const dy = Math.floor(y * rh.height / boardHeight);
+      for (let y = Math.ceil(top / scaleY / step) * step; y < boardHeight && y * scaleY <= top + height; y += step) {
+        const dy = Math.round(y * scaleY - top);
         yctx.fillRect(18, dy, 6, 1);
         yctx.fillText(String(y), 1, dy + 10);
       }
+    }
+
+    function refreshViewport() {
+      if (scrollFrame) return;
+      scrollFrame = requestAnimationFrame(() => {
+        scrollFrame = 0;
+        if (!hasBoard() || !isActive() || !viewport.clientWidth) return;
+        const region = viewWindow();
+        drawRulers(region);
+        drawDecoration(region);
+      });
     }
 
     function viewportCenter() {
@@ -253,12 +383,9 @@
       const pixelHeight = Math.max(1, Math.round(boardHeight * zoom));
       stage.style.width = pixelWidth + 'px';
       stage.style.height = pixelHeight + 'px';
-      decoration.width = Math.min(pixelWidth, 2048);
-      decoration.height = Math.min(pixelHeight, 2048);
       showZoom();
-      drawRulers(pixelWidth, pixelHeight);
       if (fit) positionCanvas(0.5, 0.5, viewportCenter());
-      schedulePaint(false);
+      refreshViewport();
     }
 
     function changeZoom(value, anchor = viewportCenter()) {
@@ -306,21 +433,28 @@
       overlay.style.opacity = String(Number($('pixelOverlayOpacity').value) / 100);
     }
 
-    function drawDecoration() {
+    function drawDecoration({ left, top, width, height, scaleX: dx, scaleY: dy } = viewWindow()) {
+      if (decoration.width !== width) decoration.width = width;
+      if (decoration.height !== height) decoration.height = height;
+      decoration.style.left = left + 'px';
+      decoration.style.top = top + 'px';
+      decoration.style.width = width + 'px';
+      decoration.style.height = height + 'px';
+      if (!width || !height) return;
       const context = decoration.getContext('2d');
-      const dx = decoration.width / boardWidth;
-      const dy = decoration.height / boardHeight;
       context.clearRect(0, 0, decoration.width, decoration.height);
+      context.save();
+      context.translate(-left, -top);
       if ($('pixelGrid').checked && zoom >= 6) {
         context.beginPath();
         context.strokeStyle = 'rgba(120,130,150,.4)';
-        for (let x = 1; x < boardWidth; x++) {
-          context.moveTo(x * dx, 0);
-          context.lineTo(x * dx, decoration.height);
+        for (let x = Math.max(1, Math.ceil(left / dx)); x < boardWidth && x * dx <= left + width; x++) {
+          context.moveTo(x * dx, top);
+          context.lineTo(x * dx, top + height);
         }
-        for (let y = 1; y < boardHeight; y++) {
-          context.moveTo(0, y * dy);
-          context.lineTo(decoration.width, y * dy);
+        for (let y = Math.max(1, Math.ceil(top / dy)); y < boardHeight && y * dy <= top + height; y++) {
+          context.moveTo(left, y * dy);
+          context.lineTo(left + width, y * dy);
         }
         context.stroke();
       }
@@ -329,8 +463,8 @@
         context.beginPath();
         if (!mask) context.rect(x * dx, y * dy, w * dx, h * dy);
         else {
-          for (let j = 0; j < h; j++) {
-            for (let i = 0; i < w; i++) {
+          for (let j = Math.max(0, Math.floor(top / dy) - y); j < Math.min(h, Math.ceil((top + height) / dy) - y); j++) {
+            for (let i = Math.max(0, Math.floor(left / dx) - x); i < Math.min(w, Math.ceil((left + width) / dx) - x); i++) {
               const k = j * w + i;
               if (!mask[k]) continue;
               const a = (x + i) * dx;
@@ -363,24 +497,35 @@
         context.lineWidth = 1;
         context.strokeRect(cursor.x * dx, cursor.y * dy, dx, dy);
       }
+      context.restore();
     }
 
-    function schedulePaint(updateComposite = true) {
-      if (updateComposite) compositeDirty = true;
+    function schedulePaint(updateComposite = true, region = null) {
+      if (updateComposite) {
+        compositeRegion = compositeDirty && compositeRegion && region ? union(compositeRegion, region)
+          : compositeDirty ? null : region;
+        compositeDirty = true;
+      }
       if (paintFrame) return;
       paintFrame = requestAnimationFrame(() => {
         paintFrame = 0;
         if (!boardWidth || !boardHeight || !isActive()) return;
         if (compositeDirty) {
           compositeDirty = false;
-          compositeCtx.clearRect(0, 0, boardWidth, boardHeight);
+          const rect = compositeRegion || { x: 0, y: 0, w: boardWidth, h: boardHeight };
+          compositeRegion = null;
+          compositeCtx.clearRect(rect.x, rect.y, rect.w, rect.h);
           compositeCtx.imageSmoothingEnabled = false;
-          for (const layer of [...(project?.layers || [])].sort((a, b) => a.index - b.index)) {
+          if (isAnimated()) {
+            const current = layers.get(playbackID || activeID);
+            if (rasterImage(current)) drawRaster(compositeCtx, rasterImage(current), rect);
+            drawOnion(rect);
+          } else for (const layer of [...entries()].sort((a, b) => a.index - b.index)) {
             const raster = layers.get(layer.id);
-            if (!visibleForPreview(layer) || !raster) continue;
+            if (!visibleForPreview(layer) || !rasterImage(raster)) continue;
             compositeCtx.globalAlpha = layer.opacity ?? 1;
             compositeCtx.globalCompositeOperation = layer.blend && layer.blend !== 'normal' ? layer.blend : 'source-over';
-            compositeCtx.drawImage(raster.canvas, 0, 0);
+            drawRaster(compositeCtx, rasterImage(raster), rect);
           }
           compositeCtx.globalAlpha = 1;
           compositeCtx.globalCompositeOperation = 'source-over';
@@ -393,10 +538,35 @@
       });
     }
 
-    function surface() {
-      const canvas = canvas2D(boardWidth, boardHeight);
-      const context = canvas.getContext('2d', { willReadFrequently: true });
-      return { canvas, context, pixels: context.createImageData(boardWidth, boardHeight), version: 0 };
+    function drawRaster(context, canvas, rect) {
+      const { x, y, w, h } = rect;
+      context.drawImage(canvas, x, y, w, h, x, y, w, h);
+    }
+
+    function drawOnion(rect) {
+      const context = onion.getContext('2d');
+      context.clearRect(rect.x, rect.y, rect.w, rect.h);
+      if (playing || running || !$('pixelAnimOnion').checked) return;
+      const current = layerMetadata(playbackID || activeID);
+      const previousFrames = visibleFrames().filter((frame) => frame.index < current?.index);
+      const previous = previousFrames[previousFrames.length - 1];
+      const raster = layers.get(previous?.id);
+      if (rasterImage(raster)) drawRaster(context, rasterImage(raster), rect);
+    }
+
+    function rasterImage(raster) {
+      return raster?.canvas || raster?.image;
+    }
+
+    function editableRaster(raster) {
+      if (!raster.canvas) {
+        raster.canvas = canvas2D(boardWidth, boardHeight);
+        raster.context = raster.canvas.getContext('2d', { willReadFrequently: true });
+        if (raster.image) raster.context.drawImage(raster.image, 0, 0);
+        raster.image = null;
+      }
+      if (!raster.pixels) raster.pixels = raster.context.getImageData(0, 0, boardWidth, boardHeight);
+      return raster;
     }
     function snapRect(source, rect) {
       const bytes = new Uint8ClampedArray(rect.w * rect.h * 4);
@@ -507,8 +677,10 @@
       if (!next?.open || next.engine !== 'pixel') next = null;
       const keyChanged = next?.projectId !== old?.projectId;
       const resized = next?.pixel?.width !== old?.pixel?.width || next?.pixel?.height !== old?.pixel?.height;
+      const modeChanged = next?.pixel?.mode !== old?.pixel?.mode;
       if (!keyChanged && next && old && next.revision < old.revision) return;
-      if (keyChanged || resized) {
+      if (keyChanged || resized || modeChanged || options.reload) stopPlayback();
+      if (keyChanged || resized || modeChanged) {
         cancelWheelZoom();
         generation++;
         selection = null;
@@ -538,11 +710,22 @@
       }
       boardWidth = next.pixel.width;
       boardHeight = next.pixel.height;
-      activeID = options.activeLayer || next.activeLayer || next.layers?.[0]?.id || '';
-      if (composite.width !== boardWidth || composite.height !== boardHeight) {
-        composite.width = overlay.width = boardWidth;
-        composite.height = overlay.height = boardHeight;
+      const previousActive = activeID;
+      activeID = options.activeLayer || options.frameId || animation(next)?.activeFrameId || next.activeLayer || entries(next)[0]?.id || '';
+      if (previousActive !== activeID && isAnimated()) playbackID = '';
+      if (previousActive !== activeID) {
+        const previousRaster = layers.get(previousActive);
+        if (previousRaster) previousRaster.pixels = null;
       }
+      if (animation(next)) {
+        $('pixelAnimFPS').value = animation(next).fps;
+        $('pixelAnimLoop').checked = animation(next).loop;
+      }
+      if (composite.width !== boardWidth || composite.height !== boardHeight) {
+        composite.width = overlay.width = onion.width = boardWidth;
+        composite.height = overlay.height = onion.height = boardHeight;
+      }
+      if (modeChanged) onion.getContext('2d').clearRect(0, 0, boardWidth, boardHeight);
       if (resized || keyChanged) {
         $('pixelWidth').value = boardWidth;
         $('pixelHeight').value = boardHeight;
@@ -567,59 +750,59 @@
       }
       if (keyChanged || resized) drawOverlay();
       if (keyChanged || JSON.stringify(next.pixel.palette) !== JSON.stringify(old?.pixel?.palette)) renderPalette();
-      const layerIDs = new Set((next.layers || []).map((layer) => layer.id));
+      const layerIDs = new Set(entries(next).map((layer) => layer.id));
       for (const id of layers.keys()) {
         if (!layerIDs.has(id)) layers.delete(id);
       }
-      for (const layer of next.layers || []) {
+      for (const layer of entries(next)) {
         const local = layers.get(layer.id);
-        const previous = old?.layers?.find((item) => item.id === layer.id);
-        const changed = options.reload || keyChanged || resized || options.layerId === layer.id
+        const previous = entries(old).find((item) => item.id === layer.id);
+        const changedID = options.frameId || options.layerId;
+        const changed = options.reload || keyChanged || resized || changedID === layer.id
           || (!options.local && (previous?.updated !== layer.updated || previous?.file !== layer.file));
         if (!local || (changed && !pending.some((entry) => entry.id === layer.id) && stroke?.id !== layer.id)) {
           if (local && !local.loading && !keyChanged && !resized && next.revision === old.revision + 1
-              && options.layerId === layer.id && options.rgbaBase64 && options.region) {
+              && changedID === layer.id && options.rgbaBase64 && options.region) {
             const bytes = Uint8ClampedArray.from(atob(options.rgbaBase64), (char) => char.charCodeAt(0));
-            applyBytes(local, bytes, options.region);
+            applyBytes(editableRaster(local), bytes, options.region);
           } else {
-            const fallback = options.layerId === layer.id && options.pngBase64
+            const fallback = changedID === layer.id && options.pngBase64
               ? 'data:image/png;base64,' + options.pngBase64 : null;
             readLayer(layer.id, fallback);
           }
         }
       }
-      if (keyChanged || resized) layout();
+      loading = [...layers.values()].some((item) => item.loading);
+      if (keyChanged || resized || modeChanged) layout();
       updateControls();
       schedulePaint();
     }
 
     function readLayer(id, dataURI) {
       const which = generation;
-      const raster = layers.get(id) || surface();
+      const raster = layers.get(id) || { version: 0 };
       layers.set(id, raster);
       const version = ++raster.version;
       raster.loading = true;
+      raster.failed = false;
       loading = true;
       const query = rasterQuery(id);
-      const load = loadRaster(query).catch((error) => {
-        if (dataURI) return loadImage(dataURI);
+      const load = dataURI ? loadImage(dataURI) : loadRaster(query).catch((error) => {
         if (generation !== which || raster.version !== version || String(project.revision) === query.get('revision')) throw error;
         query.set('revision', String(project.revision));
         return loadRaster(query);
       });
       load.then((result) => {
         if (generation !== which || raster.version !== version || !layers.has(id)) return;
-        if (result instanceof ImageData) {
-          raster.pixels = result;
-          raster.context.putImageData(result, 0, 0);
-        } else {
-          raster.context.clearRect(0, 0, boardWidth, boardHeight);
-          raster.context.drawImage(result, 0, 0);
-          raster.pixels = raster.context.getImageData(0, 0, boardWidth, boardHeight);
-        }
+        if (result.naturalWidth !== boardWidth || result.naturalHeight !== boardHeight) throw new Error('图层像素尺寸不匹配');
+        raster.canvas = raster.context = raster.pixels = null;
+        raster.image = result;
         schedulePaint();
       }).catch((error) => {
-        if (generation === which && raster.version === version) displayError(error);
+        if (generation === which && raster.version === version) {
+          raster.failed = true;
+          displayError(error);
+        }
       }).finally(() => {
         if (generation !== which || raster.version !== version) return;
         raster.loading = false;
@@ -629,15 +812,8 @@
     }
 
     async function loadRaster(query) {
-      const raw = new URLSearchParams(query);
-      raw.set('format', 'rgba');
-      const response = await fetch('/api/pixel/layer?' + raw, { cache: 'no-store' });
+      const response = await fetch('/api/pixel/layer?' + query, { cache: 'no-store' });
       if (response.ok) {
-        if (response.headers.get('content-type')?.includes('application/octet-stream')) {
-          const bytes = new Uint8ClampedArray(await response.arrayBuffer());
-          if (bytes.length !== boardWidth * boardHeight * 4) throw new Error('图层像素尺寸不匹配');
-          return new ImageData(bytes, boardWidth, boardHeight);
-        }
         const url = URL.createObjectURL(await response.blob());
         try { return await loadImage(url); } finally { URL.revokeObjectURL(url); }
       }
@@ -662,6 +838,13 @@
       const k = (y * boardWidth + x) * 4;
       const pixels = edit.raster.pixels.data;
       if (rgba.every((value, offset) => pixels[k + offset] === value)) return;
+      const tileX = Math.floor(x / tileSize) * tileSize;
+      const tileY = Math.floor(y / tileSize) * tileSize;
+      const tileID = tileY * boardWidth + tileX;
+      if (!edit.before.has(tileID)) {
+        const rect = { x: tileX, y: tileY, w: Math.min(tileSize, boardWidth - tileX), h: Math.min(tileSize, boardHeight - tileY) };
+        edit.before.set(tileID, { rect, bytes: snapRect(pixels, rect) });
+      }
       pixels.set(rgba, k);
       edit.left = Math.min(edit.left, x);
       edit.right = Math.max(edit.right, x);
@@ -687,14 +870,16 @@
     function paintEdit(edit) {
       const rect = editRect(edit);
       if (rect) edit.raster.context.putImageData(edit.raster.pixels, 0, 0, rect.x, rect.y, rect.w, rect.h);
-      schedulePaint();
+      schedulePaint(!!rect, rect);
     }
     function resetPreview(edit) {
       const rect = editRect(edit);
       if (!rect) return;
-      applyBytes(edit.raster, snapRect(edit.before, rect), rect);
+      for (const tile of edit.before.values()) applyBytes(edit.raster, tile.bytes, tile.rect);
+      edit.before.clear();
       edit.left = edit.top = Infinity;
       edit.right = edit.bottom = -1;
+      schedulePaint(true, rect);
     }
 
     function maskFor(start, pixels, clip) {
@@ -787,9 +972,9 @@
     function beginEdit(start, chosenColor, chosenTool) {
       const layer = layerMetadata();
       const raster = layers.get(activeID);
-      if (!ownsEdits() || !layer || !raster || raster.loading || layer.locked || !layer.visible) return null;
+      if (!ownsEdits() || !layer || !raster || raster.loading || raster.failed || layer.locked || (!isAnimated() && !layer.visible)) return null;
       return {
-        id: activeID, raster, before: raster.pixels.data.slice(), start, last: start, tool: chosenTool,
+        id: activeID, raster: editableRaster(raster), before: new Map(), start, last: start, tool: chosenTool,
         rgba: chosenTool === 'eraser' ? zero : toRGBA(chosenColor),
         thickness: clamp(Number($('pixelThickness').value) || 1, 1, 8),
         mirrorX: $('pixelMirrorX').checked, mirrorY: $('pixelMirrorY').checked,
@@ -797,32 +982,37 @@
       };
     }
 
-    function moveSelection(edit, next) {
+    function moveSelection(edit, pointer) {
       resetPreview(edit);
-      const deltaX = next.x - edit.start.x;
-      const deltaY = next.y - edit.start.y;
+      const deltaX = pointer.x - edit.start.x;
+      const deltaY = pointer.y - edit.start.y;
       if (!deltaX && !deltaY) { select(edit.oldSelection); return; }
       const source = edit.oldSelection;
-      const nextMask = new Uint8Array(boardWidth * boardHeight);
       for (let y = source.y; y < source.y + source.h; y++) {
         for (let x = source.x; x < source.x + source.w; x++) {
           if (selected(x, y, source)) writePoint(edit, x, y, zero, null);
         }
       }
+      const left = Math.max(0, source.x + deltaX);
+      const right = Math.min(boardWidth, source.x + source.w + deltaX);
+      const top = Math.max(0, source.y + deltaY);
+      const bottom = Math.min(boardHeight, source.y + source.h + deltaY);
+      const next = right > left && bottom > top ? { x: left, y: top, w: right - left, h: bottom - top } : null;
+      if (next && source.mask) next.mask = new Uint8Array(next.w * next.h);
       for (let y = source.y; y < source.y + source.h; y++) {
         for (let x = source.x; x < source.x + source.w; x++) {
           if (!selected(x, y, source)) continue;
           const nx = x + deltaX;
           const ny = y + deltaY;
           if (nx < 0 || nx >= boardWidth || ny < 0 || ny >= boardHeight) continue;
-          const index = (y * boardWidth + x) * 4;
-          const rgba = edit.before.subarray(index, index + 4);
+          const index = ((y - source.y) * source.w + x - source.x) * 4;
+          const rgba = edit.movePixels.subarray(index, index + 4);
           if (rgba[3]) writePoint(edit, nx, ny, rgba, null);
-          nextMask[ny * boardWidth + nx] = 1;
+          if (next?.mask) next.mask[(ny - next.y) * next.w + nx - next.x] = 1;
         }
       }
       paintEdit(edit);
-      select(normalizeSelection(nextMask));
+      select(next?.mask && !next.mask.includes(1) ? null : next);
     }
 
     function retainHistory(entry) {
@@ -839,8 +1029,19 @@
     function finishEdit(edit) {
       const rect = editRect(edit);
       if (!rect) return;
-      const before = snapRect(edit.before, rect);
       const after = snapRect(edit.raster.pixels.data, rect);
+      const before = after.slice();
+      for (const tile of edit.before.values()) {
+        const left = Math.max(rect.x, tile.rect.x);
+        const right = Math.min(rect.x + rect.w, tile.rect.x + tile.rect.w);
+        const top = Math.max(rect.y, tile.rect.y);
+        const bottom = Math.min(rect.y + rect.h, tile.rect.y + tile.rect.h);
+        for (let y = top; y < bottom; y++) {
+          const source = ((y - tile.rect.y) * tile.rect.w + left - tile.rect.x) * 4;
+          const target = ((y - rect.y) * rect.w + left - rect.x) * 4;
+          before.set(tile.bytes.subarray(source, source + (right - left) * 4), target);
+        }
+      }
       if (before.every((byte, index) => byte === after[index])) return;
       const change = { id: edit.id, rect, before, after };
       retainHistory(change);
@@ -849,14 +1050,16 @@
 
     function queueEdit(id, rect, bytes) {
       const last = pending[pending.length - 1];
-      if (last && !last.sent && last.id === id) {
-        const merged = area(
-          { x: Math.min(last.rect.x, rect.x), y: Math.min(last.rect.y, rect.y) },
-          { x: Math.max(last.rect.x + last.rect.w, rect.x + rect.w) - 1, y: Math.max(last.rect.y + last.rect.h, rect.y + rect.h) - 1 },
-        );
-        last.rect = merged;
-        last.bytes = snapRect(layers.get(id).pixels.data, merged);
-      } else pending.push({ id, rect, bytes });
+      const combine = last && !last.sent && last.id === id;
+      const dirtyRect = combine ? union(last.rect, rect) : rect;
+      const raster = layers.get(id);
+      const payload = { id, rect: dirtyRect, animated: isAnimated() };
+      if (dirtyRect.w * dirtyRect.h * 4 > partialUploadBytes) {
+        payload.png = encodePNG(raster.canvas);
+        payload.png.catch(() => {});
+      } else payload.bytes = combine ? snapRect(raster.pixels.data, dirtyRect) : bytes;
+      if (combine) pending[pending.length - 1] = payload;
+      else pending.push(payload);
       remoteError = '';
       debounceSync();
       updateControls();
@@ -868,7 +1071,8 @@
     }
 
     function rasterQuery(id, version = project) {
-      const query = new URLSearchParams({ id, projectId: version.projectId, revision: String(version.revision) });
+      const target = version.pixel?.mode === 'anim' ? { frameId: id } : { id };
+      const query = new URLSearchParams({ ...target, projectId: version.projectId, revision: String(version.revision) });
       if (token) query.set('k', token);
       return query;
     }
@@ -880,9 +1084,20 @@
       const before = (await api('/api/project'))?.project;
       if (!validate(before)) return null;
       const image = await loadRaster(rasterQuery(batch.id, before));
-      if (!(image instanceof ImageData)) return null;
-      const remote = snapRect(image.data, batch.rect);
-      if (!remote.every((byte, index) => byte === batch.bytes[index])) return null;
+      const { x, y, w, h } = batch.rect;
+      const full = batch.png ? { x: 0, y: 0, w: boardWidth, h: boardHeight } : { x, y, w, h };
+      const canvas = canvas2D(full.w, full.h);
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(image, -full.x, -full.y);
+      const remote = ctx.getImageData(0, 0, full.w, full.h).data;
+      ctx.clearRect(0, 0, full.w, full.h);
+      if (batch.png) {
+        const url = URL.createObjectURL(await batch.png);
+        try { ctx.drawImage(await loadImage(url), 0, 0); }
+        finally { URL.revokeObjectURL(url); }
+      } else ctx.putImageData(new ImageData(batch.bytes, w, h), 0, 0);
+      const expected = ctx.getImageData(0, 0, full.w, full.h).data;
+      if (!remote.every((byte, index) => byte === expected[index])) return null;
       const after = (await api('/api/project'))?.project;
       return validate(after) ? { project: after } : null;
     }
@@ -892,11 +1107,15 @@
         const batch = pending[0];
         batch.sent = true;
         const version = requestWithRevision();
+        const target = batch.animated ? { frameId: batch.id } : { layerId: batch.id };
+        const bitmap = batch.png
+          ? { pngBase64: byte64(new Uint8Array(await (await batch.png).arrayBuffer())) }
+          : { region: batch.rect, rgbaBase64: byte64(batch.bytes) };
         let result;
         try {
           result = await api('/api/pixel/layer', {
             method: 'PUT',
-            body: { ...version, layerId: batch.id, region: batch.rect, rgbaBase64: byte64(batch.bytes) },
+            body: { ...version, ...target, ...bitmap },
           });
         } catch (error) {
           if (!error.status || error.status === 409) result = await recoverPending(batch, version).catch(() => null);
@@ -933,6 +1152,7 @@
         return null;
       }
       busy = true;
+      if (!options?.keepPlayback) stopPlayback();
       remoteError = '';
       updateControls();
       try {
@@ -942,9 +1162,11 @@
         loadResult(result, options);
         const replacesCheckpoint = path === '/api/pixel/quantize'
           || (path === '/api/layers/ops' && body.op !== 'active')
+          || (path === '/api/pixel/frames' && !['active', 'fps', 'loop'].includes(body.action))
           || (path === '/api/pixel/palette' && (body.action === 'extract' || body.colors !== undefined));
         if (result?.project && replacesCheckpoint) {
-          const keep = (entry) => !entry.ai && (body.op !== 'delete' || entry.id !== body.id);
+          const deleted = (body.op || body.action) === 'delete' ? (body.id || body.frameId) : '';
+          const keep = (entry) => !entry.ai && entry.id !== deleted;
           undo = undo.filter(keep);
           redo = redo.filter(keep);
         }
@@ -975,9 +1197,9 @@
           return;
         }
         const bytes = forward ? entry.after : entry.before;
-        applyBytes(raster, bytes, entry.rect);
+        applyBytes(editableRaster(raster), bytes, entry.rect);
         queueEdit(entry.id, entry.rect, bytes);
-        schedulePaint();
+        schedulePaint(true, entry.rect);
       }
       from.pop();
       to.push(entry);
@@ -986,7 +1208,7 @@
 
     function startPointer(event) {
       if (!hasBoard() || stroke || event.button > 2) return;
-      const pan = event.button === 1 || event.button === 0 && (spaceDown || tool === 'pan' || running);
+      const pan = event.button === 1 || event.button === 0 && (spaceDown || tool === 'pan' || running || playing);
       if (!pan && (event.target !== stage || !ownsEdits())) return;
       if (tool === 'pan' && !pan) return;
       viewport.focus({ preventScroll: true });
@@ -1000,6 +1222,7 @@
         return;
       }
       const start = point(event);
+      if (playbackID) stopPlayback();
       cursor = start;
       if (tool === 'picker') {
         const sample = compositeCtx.getImageData(start.x, start.y, 1, 1).data;
@@ -1011,16 +1234,19 @@
         select(area(start, start));
       } else if (tool === 'wand') {
         const raster = layers.get(activeID);
-        if (raster) select(normalizeSelection(maskFor(start, raster.pixels.data, null)));
+        if (raster && !raster.failed) select(normalizeSelection(maskFor(start, editableRaster(raster).pixels.data, null)));
         return;
       } else {
         if (tool === 'move' && (!selection || !selected(start.x, start.y))) return;
         const edit = beginEdit(start, event.button === 2 ? secondary : primary, tool);
         if (!edit) return;
         stroke = edit;
-        if (tool === 'move') edit.oldSelection = selection;
+        if (tool === 'move') {
+          edit.oldSelection = selection;
+          edit.movePixels = snapRect(edit.raster.pixels.data, selection);
+        }
         else if (tool === 'fill') {
-          const mask = maskFor(start, edit.before, selection);
+          const mask = maskFor(start, edit.raster.pixels.data, selection);
           if (mask) {
             for (let i = 0; i < mask.length; i++) {
               if (mask[i]) colorDot(edit, edit.rgba, i % boardWidth, Math.floor(i / boardWidth));
@@ -1138,20 +1364,56 @@
       try {
         await flush();
         const params = new URLSearchParams(requestWithRevision({ format, scale: parseInt($('pixelExportScale').value, 10) }));
+        if (isAnimated() && format === 'png') params.set('frameId', playbackID || activeID);
         if (token) params.set('k', token);
         const response = await fetch('/api/pixel/export?' + params);
         if (!response.ok) {
           const error = await response.json().catch(() => ({}));
           throw new Error(error.error || '导出失败');
         }
-        const url = URL.createObjectURL(await response.blob());
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = (project.name || 'pixel-art') + '.' + format;
-        link.click();
-        setTimeout(() => URL.revokeObjectURL(url), 1500);
+        downloadBlob(await response.blob(), (project.name || 'pixel-art') + '.' + format);
       } catch (error) { displayError(error); }
       finally { busy = false; updateControls(); }
+    }
+
+    function downloadBlob(blob, filename) {
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1500);
+    }
+
+    async function exportGIF() {
+      if (!ownsEdits() || !isAnimated()) return;
+      if (typeof window.GIFEncoder !== 'function') { toast('GIF 编码器无法加载', true); return; }
+      busy = exportingGIF = true;
+      updateControls();
+      try {
+        await flush();
+        const frames = visibleFrames();
+        if (!frames.length) throw new Error('请至少显示一帧再导出 GIF');
+        const scale = Math.min(parseInt($('pixelExportScale').value, 10), 640 / Math.max(boardWidth, boardHeight));
+        const width = Math.max(1, Math.round(boardWidth * scale));
+        const height = Math.max(1, Math.round(boardHeight * scale));
+        const { fps, loop } = animation();
+        const encoder = new window.GIFEncoder(width, height, { loop: loop ? 0 : -1 });
+        const canvas = canvas2D(width, height);
+        const context = canvas.getContext('2d', { willReadFrequently: true });
+        context.imageSmoothingEnabled = false;
+        for (const frame of frames) {
+          const raster = layers.get(frame.id);
+          if (!rasterImage(raster) || raster.failed) throw new Error('无法读取帧「' + frame.name + '」');
+          context.clearRect(0, 0, width, height);
+          context.drawImage(rasterImage(raster), 0, 0, width, height);
+          const delay = Math.max(2, Math.round(100 / fps) * (frame.delayMult || 1));
+          encoder.addFrame(context.getImageData(0, 0, width, height).data, delay);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        downloadBlob(encoder.finish(), 'pixel-' + (project.name || 'animation') + '.gif');
+      } catch (error) { displayError(error); }
+      finally { busy = exportingGIF = false; updateControls(); }
     }
 
     function onKey(event) {
@@ -1230,6 +1492,7 @@
         changeZoom(zoom * Math.exp(-delta * 0.00125), wheelAnchor);
       });
     }, { passive: false });
+    viewport.addEventListener('scroll', refreshViewport, { passive: true });
     if (window.ResizeObserver) new ResizeObserver(layout).observe(viewport);
     window.addEventListener('keyup', (event) => {
       if (event.code === 'Space' && spaceDown) { spaceDown = false; updateControls(); }
@@ -1278,8 +1541,36 @@
       const [width, height] = dimensions();
       if (!checkDimensions(width, height)) return;
       if (width === boardWidth && height === boardHeight) return;
+      if (!isAnimated() && Math.max(width, height) > 1024 && entries().length > 14) {
+        toast('画布宽或高超过 1024 时最多支持 14 个图层，请先精简图层。', true);
+        return;
+      }
       await mutate('/api/pixel/resize', { width, height, mode: $('pixelResizeMode').value }, 'POST', { reload: true });
     });
+    listen('pixelMode', 'change', async (event) => {
+      const pixelMode = event.target.value;
+      event.target.value = isAnimated() ? 'anim' : 'static';
+      if (event.target.value === pixelMode) return;
+      if (pixelMode === 'anim' && Math.max(boardWidth, boardHeight) > maxAnimationSize) {
+        toast('请先将画布宽、高调整至 512 像素以内。', true);
+        return;
+      }
+      if (pixelMode === 'static' && entries().length > 1) {
+        toast('请将帧序列精简为一帧，再切换到静态多层。', true);
+        return;
+      }
+      const flatten = pixelMode === 'anim' && entries().length > 1;
+      if (flatten && !await confirm('切换到动图', '当前合成画面将成为首帧，原图层将合并。', '合并并切换')) return;
+      await mutate('/api/pixel/frames', { action: 'modeSwitch', pixelMode, flatten }, 'POST', { reload: true });
+    });
+    click('pixelAnimPlay', togglePlayback);
+    listen('pixelAnimOnion', 'change', () => schedulePaint());
+    listen('pixelAnimFPS', 'change', (event) => {
+      const fps = Number(event.target.value);
+      if (!Number.isInteger(fps) || fps < 1 || fps > 30) { event.target.value = animation().fps; return; }
+      mutate('/api/pixel/frames', { action: 'fps', fps });
+    });
+    listen('pixelAnimLoop', 'change', (event) => mutate('/api/pixel/frames', { action: 'loop', loop: event.target.checked }));
     listen('pixelDraft', 'change', () => {
       if ($('pixelDraft').value === 'quantize') $('pixelSampling').open = true;
     });
@@ -1310,33 +1601,39 @@
     }));
     click('pixelExportPNG', () => exportFile('png'));
     click('pixelExportSVG', () => exportFile('svg'));
+    click('pixelExportGIF', exportGIF);
 
-    function checkDimensions(width, height) {
-      if ([width, height].every((size) => Number.isInteger(size) && size >= 8 && size <= 512)) return true;
-      toast('像素画布的宽和高都须为 8–512 的整数', true);
+    function checkDimensions(width, height, mode = isAnimated() ? 'anim' : 'static') {
+      const limit = mode === 'anim' ? maxAnimationSize : maxCanvasSize;
+      if ([width, height].every((size) => Number.isInteger(size) && size >= 8 && size <= limit)) return true;
+      toast(`像素画布的宽和高都须为 8–${limit} 的整数`, true);
       return false;
     }
 
     function turnContents() {
-      return JSON.stringify([project?.layers, project?.activeLayer, project?.pixel?.palette]);
+      return JSON.stringify([entries(), activeID, project?.pixel?.palette]);
     }
 
     setTool(tool);
     return {
-      setProject, layout, onKey, paste, flush, requestWithRevision, mutate, quantize,
-      getDimensions() {
-        const [width, height] = dimensions();
-        return checkDimensions(width, height) ? { width, height } : null;
+      setProject, layout, onKey, paste, flush, requestWithRevision, mutate, quantize, checkDimensions,
+      stopPlayback,
+      get layerLimit() {
+        if (isAnimated()) return maxFrameCount;
+        return Math.max(boardWidth, boardHeight) > 1024 ? 14 : 32;
       },
       requestFields() {
         const areaSelection = selectPayload();
         return requestWithRevision({
-          engine: 'pixel', pixelDraftMode: $('pixelDraft').value, selection: areaSelection,
+          engine: 'pixel', pixelMode: isAnimated() ? 'anim' : 'static', pixelDraftMode: $('pixelDraft').value, selection: areaSelection,
           restrictToSelection: Boolean(areaSelection && $('pixelRestrict').checked),
         });
       },
       get canDraft() { return Boolean(project?.pixel?.mainImage); },
-      get hasDraft() { return Boolean(project?.pixel?.draftLayerId && layerMetadata(project.pixel.draftLayerId)); },
+      get hasDraft() {
+        const id = project?.pixel?.draftFrameId || project?.pixel?.draftLayerId;
+        return Boolean(id && layerMetadata(id));
+      },
       get hasAssets() { return Boolean(project?.pixel?.mainImage || project?.pixel?.refImages?.length); },
       get editable() { return ownsEdits(); },
       get actionBusy() { return busy; },
@@ -1347,6 +1644,7 @@
         schedulePaint();
       },
       runState(on) {
+        if (on) stopPlayback();
         running = on;
         if (!running && previewVisibility.size) {
           previewVisibility.clear();
@@ -1366,7 +1664,8 @@
       handleUpdate(update) {
         if (update?.projectId !== projectKey() || !update.project) return;
         applyProject(update.project, {
-          layerId: update.layerId, pngBase64: update.pngBase64, rgbaBase64: update.rgbaBase64, region: update.region,
+          layerId: update.layerId, frameId: update.frameId,
+          pngBase64: update.pngBase64, rgbaBase64: update.rgbaBase64, region: update.region,
         });
         if (update.region) {
           const marker = update.region;
@@ -1378,6 +1677,7 @@
         }
       },
       reset() {
+        stopPlayback();
         undo = [];
         redo = [];
         select();

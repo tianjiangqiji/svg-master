@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
 	"os"
 	"path/filepath"
 	"sort"
@@ -113,14 +114,16 @@ type CanvasMeta struct {
 
 // Project 一个打开中的工程。所有导出方法都可并发调用。
 type Project struct {
-	mu           sync.Mutex
-	dir          string // 工程文件夹绝对路径
-	kind         string // quick | user
-	file         File
-	id           string
-	pixelPending *pixelCheckpoint
-	pixelUndo    *pixelCheckpoint
-	pixelRedo    *pixelCheckpoint
+	mu                     sync.Mutex
+	dir                    string // 工程文件夹绝对路径
+	kind                   string // quick | user
+	file                   File
+	id                     string
+	pixelPending           *pixelCheckpoint
+	pixelUndo              *pixelCheckpoint
+	pixelRedo              *pixelCheckpoint
+	pixelComposite         *image.NRGBA
+	pixelCompositeRevision uint64
 }
 
 // ErrLocked 图层被锁定。
@@ -160,10 +163,15 @@ func Open(dir, kind string) (*Project, error) {
 		}
 		switch f.Engine {
 		case EnginePixel:
+			if f.Pixel != nil && f.Pixel.Mode == "" {
+				f.Pixel.Mode = PixelModeStatic
+				f.Pixel.ModeLocked = len(f.History) > 0
+			}
 			if err := checkPixelFile(f); err != nil {
 				return nil, err
 			}
 			f.Canvas = pixelCanvas(f.Pixel.Width, f.Pixel.Height)
+			normalizePixelAnim(f.Pixel.Anim)
 		case "", EngineSVG:
 			f.Pixel = nil
 		default:
@@ -447,6 +455,25 @@ func (p *Project) LayerContent(id string) (string, error) {
 // 前端用它决定「快速生成」要不要弹「将清空图层与上下文」的确认框。
 func (p *Project) IsEmpty() bool {
 	p.mu.Lock()
+	if p.file.Pixel != nil {
+		defer p.mu.Unlock()
+		if len(p.file.History) > 0 {
+			return false
+		}
+		if anim := p.file.Pixel.Anim; anim != nil {
+			for _, frame := range anim.Frames {
+				if frame.Elements > 0 {
+					return false
+				}
+			}
+		}
+		for _, layer := range p.file.Layers {
+			if layer.Elements > 0 {
+				return false
+			}
+		}
+		return true
+	}
 	layers := make([]Layer, len(p.file.Layers))
 	copy(layers, p.file.Layers)
 	hasHistory := len(p.file.History) > 0

@@ -18,10 +18,22 @@ const (
 	ToolPixelDraw        = "pixel_draw"
 	ToolPixelReadRegion  = "pixel_read_region"
 	ToolPixelInspect     = "pixel_inspect"
+	ToolPixelAnimInfo    = "pixel_anim_info"
+	ToolPixelFrameOp     = "pixel_frame_op"
 )
 
-func pixelToolSpecs() []llm.ToolSpec {
-	return []llm.ToolSpec{
+func pixelToolSpecs(animated bool) []llm.ToolSpec {
+	target := `"layerId":{"type":"string"}`
+	drawTarget, readTarget := "图层", "图层"
+	inspectModes := `"composite","layer","crop","compare_main","compare_ref"`
+	inspectFields := target + ","
+	if animated {
+		target = `"frameId":{"type":"string","description":"省略时使用当前帧"}`
+		drawTarget, readTarget = "帧", "帧"
+		inspectModes = `"composite","crop","compare_main","compare_ref","onion","filmstrip"`
+		inspectFields = target + `,"frameIds":{"type":"array","maxItems":8,"items":{"type":"string"}},`
+	}
+	specs := []llm.ToolSpec{
 		{
 			Name: ToolPixelCanvasInfo, Description: "读取画布尺寸、图层、调色板、选区和参考图 ID。",
 			Parameters: json.RawMessage(`{"type":"object","properties":{}}`),
@@ -54,9 +66,9 @@ func pixelToolSpecs() []llm.ToolSpec {
 		},
 		{
 			Name:        ToolPixelDraw,
-			Description: "在未锁定图层按顺序批量绘制。坐标从 0 开始，x 向右、y 向下，颜色为 #RRGGBB 或 #RRGGBBAA。每种操作只填写所需字段。rect/erase_rect/dither_rect/mirror 用 x,y,w,h，line 用 x0,y0,x1,y1，ellipse 用 cx,cy,rx,ry，flood_fill/pixel 用 x,y。rect/ellipse/polygon 用 fill 控制填充；blit 用 x,y,legend,rows，点号和空格跳过，单字符映射到颜色，可用 rle:2.3K2.；outline 用 color 与 connectivity；replace_color 用 from,to。",
+			Description: "在未锁定" + drawTarget + "按顺序批量绘制。坐标从 0 开始，x 向右、y 向下，颜色为 #RRGGBB 或 #RRGGBBAA。每种操作只填写所需字段。rect/erase_rect/dither_rect/mirror 用 x,y,w,h，line 用 x0,y0,x1,y1，ellipse 用 cx,cy,rx,ry，flood_fill/pixel 用 x,y。rect/ellipse/polygon 用 fill 控制填充；blit 用 x,y,legend,rows，点号和空格跳过，单字符映射到颜色，可用 rle:2.3K2.，宽高各至多 128；outline 用 color 与 connectivity；replace_color 用 from,to。",
 			Parameters: json.RawMessage(`{"type":"object","properties":{
-				"layerId":{"type":"string"},"clipToSelection":{"type":"boolean"},"note":{"type":"string"},
+				` + target + `,"clipToSelection":{"type":"boolean"},"note":{"type":"string"},
 				"ops":{"type":"array","minItems":1,"items":{"type":"object","properties":{
 					"op":{"type":"string","enum":["clear","pixel","rect","line","ellipse","polygon","flood_fill","erase_rect","blit","dither_rect","outline","replace_color","mirror"]},
 					"x":{"type":"integer"},"y":{"type":"integer"},"w":{"type":"integer"},"h":{"type":"integer"},
@@ -74,27 +86,54 @@ func pixelToolSpecs() []llm.ToolSpec {
 			},"required":["ops"]}`),
 		},
 		{
-			Name: ToolPixelReadRegion, Description: "精确读取最多 32×32 的像素与颜色映射。layerId 可用 composite 读取合成画布。",
+			Name: ToolPixelReadRegion, Description: "精确读取指定" + readTarget + "中最多 32×32 的像素与颜色映射。静态模式的 layerId 可用 composite 读取合成画布。",
 			Parameters: json.RawMessage(`{"type":"object","properties":{
-				"layerId":{"type":"string"},"x":{"type":"integer"},"y":{"type":"integer"},
+				` + target + `,"x":{"type":"integer"},"y":{"type":"integer"},
 				"w":{"type":"integer","minimum":1,"maximum":32},"h":{"type":"integer","minimum":1,"maximum":32}
 			},"required":["x","y","w","h"]}`),
 		},
 		{
-			Name: ToolPixelInspect, Description: "自检当前合成画布、单层、放大区域，或与主图/指定参考图逐区对照。compare_ref 需传 refId。大图局部检查用 crop。",
+			Name: ToolPixelInspect, Description: "自检画布、放大区域，或与主图/指定参考图逐区对照。compare_ref 需传 refId。大图局部检查用 crop。动图可用 onion 对齐上一帧、filmstrip 检查多帧连贯性。",
 			Parameters: json.RawMessage(`{"type":"object","properties":{
-				"mode":{"type":"string","enum":["composite","layer","crop","compare_main","compare_ref"]},
-				"layerId":{"type":"string"},"refId":{"type":"string"},
+				"mode":{"type":"string","enum":[` + inspectModes + `]},
+				` + inspectFields + `"refId":{"type":"string"},
 				"region":{"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"w":{"type":"integer"},"h":{"type":"integer"}},"required":["x","y","w","h"]},
 				"showGrid":{"type":"boolean"},"fit":{"type":"string","enum":["fit","cover","stretch"]}
 			},"required":["mode"]}`),
 		},
 	}
+	if !animated {
+		return specs
+	}
+	animation := []llm.ToolSpec{
+		{
+			Name: ToolPixelAnimInfo, Description: "读取画布、帧率、循环设置、当前帧、帧顺序、选区和工程素材 ID。",
+			Parameters: json.RawMessage(`{"type":"object","properties":{}}`),
+		},
+		{
+			Name: ToolPixelFrameOp, Description: "新建、复制、删除、调序、设置或平移动图帧。duplicate 默认复制当前帧并选中新帧。index 从 1 起。shift 用 dx 和 dy 整帧平移，wrap 开启循环卷动，可传 frameIds 批量处理。",
+			Parameters: json.RawMessage(`{"type":"object","properties":{
+				"action":{"type":"string","enum":["create","duplicate","delete","reorder","set","shift"]},
+				"frameId":{"type":"string"},"sourceFrameId":{"type":"string"},"name":{"type":"string"},
+				"index":{"type":"integer","minimum":1,"maximum":32},"visible":{"type":"boolean"},
+				"delayMult":{"type":"integer","minimum":1,"maximum":8},
+				"dx":{"type":"integer"},"dy":{"type":"integer"},"wrap":{"type":"boolean"},
+				"frameIds":{"type":"array","maxItems":32,"items":{"type":"string"}}
+			},"required":["action"]}`),
+		},
+	}
+	for _, spec := range specs {
+		switch spec.Name {
+		case ToolPixelPalette, ToolPixelDraw, ToolPixelReadRegion, ToolPixelInspect:
+			animation = append(animation, spec)
+		}
+	}
+	return animation
 }
 
 func isPixelTool(name string) bool {
 	switch name {
-	case ToolPixelCanvasInfo, ToolPixelPalette, ToolPixelCreateLayer, ToolPixelSetLayer, ToolPixelDeleteLayer, ToolPixelDraw, ToolPixelReadRegion, ToolPixelInspect:
+	case ToolPixelCanvasInfo, ToolPixelPalette, ToolPixelCreateLayer, ToolPixelSetLayer, ToolPixelDeleteLayer, ToolPixelDraw, ToolPixelReadRegion, ToolPixelInspect, ToolPixelAnimInfo, ToolPixelFrameOp:
 		return true
 	}
 	return false
@@ -102,11 +141,21 @@ func isPixelTool(name string) bool {
 
 func (e *Engine) runPixelTool(call llm.ToolCall, args json.RawMessage, input PixelInput) toolOutcome {
 	bridge := e.deps.Pixel
+	switch call.Name {
+	case ToolPixelAnimInfo, ToolPixelFrameOp:
+		if bridge.CanvasInfo().Mode != pixelAnimMode {
+			return toolOutcome{Content: "当前工程为静态多层模式。", IsError: true}
+		}
+	case ToolPixelCreateLayer, ToolPixelSetLayer, ToolPixelDeleteLayer:
+		if bridge.CanvasInfo().Mode == pixelAnimMode {
+			return toolOutcome{Content: "动图工程请用 pixel_frame_op 操作帧。", IsError: true}
+		}
+	}
 	if input.RestrictToSelection && (call.Name == ToolPixelPalette || call.Name == ToolPixelSetLayer || call.Name == ToolPixelDeleteLayer) {
 		return toolOutcome{Content: "本轮只允许在选区内绘制，不能修改整层属性或全局调色板。", IsError: true}
 	}
 	switch call.Name {
-	case ToolPixelCanvasInfo:
+	case ToolPixelCanvasInfo, ToolPixelAnimInfo:
 		info := bridge.CanvasInfo()
 		if input.Selection != nil {
 			info.Selection = input.Selection
@@ -120,6 +169,26 @@ func (e *Engine) runPixelTool(call llm.ToolCall, args json.RawMessage, input Pix
 			PixelCanvasInfo
 			SelectionMask bool `json:"nonRectangularSelection,omitempty"`
 		}{info, mask})
+	case ToolPixelFrameOp:
+		var in PixelFrameOperation
+		if err := json.Unmarshal(args, &in); err != nil {
+			return argErr(call.Name, err)
+		}
+		switch in.Action {
+		case "create", "duplicate", "delete", "reorder", "set", "shift":
+		default:
+			return toolOutcome{Content: "未知的帧操作。", IsError: true}
+		}
+		if input.RestrictToSelection {
+			return toolOutcome{Content: "本轮只允许在选区内绘制，请使用 pixel_draw。", IsError: true}
+		}
+		frame, err := bridge.FrameOperation(in)
+		if err != nil {
+			return layerErr(call.Name, err)
+		}
+		out := pixelJSON(frame)
+		out.PixelChanged = true
+		return out
 	case ToolPixelPalette:
 		var in struct {
 			Action    string   `json:"action"`
@@ -190,6 +259,7 @@ func (e *Engine) runPixelTool(call llm.ToolCall, args json.RawMessage, input Pix
 	case ToolPixelDraw:
 		var in struct {
 			LayerID         string         `json:"layerId"`
+			FrameID         string         `json:"frameId"`
 			ClipToSelection bool           `json:"clipToSelection"`
 			Ops             []pixel.DrawOp `json:"ops"`
 		}
@@ -209,7 +279,11 @@ func (e *Engine) runPixelTool(call llm.ToolCall, args json.RawMessage, input Pix
 				return toolOutcome{Content: "当前没有选区。", IsError: true}
 			}
 		}
-		summary, err := bridge.Draw(in.LayerID, in.Ops, clip)
+		targetID, err := pixelTargetID(in.LayerID, in.FrameID, bridge.CanvasInfo().Mode)
+		if err != nil {
+			return argErr(call.Name, err)
+		}
+		summary, err := bridge.Draw(targetID, in.Ops, clip)
 		if err != nil {
 			return layerErr(call.Name, err)
 		}
@@ -219,6 +293,7 @@ func (e *Engine) runPixelTool(call llm.ToolCall, args json.RawMessage, input Pix
 	case ToolPixelReadRegion:
 		var in struct {
 			LayerID string `json:"layerId"`
+			FrameID string `json:"frameId"`
 			pixel.Rect
 		}
 		if err := json.Unmarshal(args, &in); err != nil {
@@ -227,7 +302,11 @@ func (e *Engine) runPixelTool(call llm.ToolCall, args json.RawMessage, input Pix
 		if in.W < 1 || in.H < 1 || in.W > pixel.MaxReadSpan || in.H > pixel.MaxReadSpan {
 			return toolOutcome{Content: "读取区域的宽和高须在 1–32 像素之间。", IsError: true}
 		}
-		region, err := bridge.ReadRegion(in.LayerID, in.Rect)
+		targetID, err := pixelTargetID(in.LayerID, in.FrameID, bridge.CanvasInfo().Mode)
+		if err != nil {
+			return argErr(call.Name, err)
+		}
+		region, err := bridge.ReadRegion(targetID, in.Rect)
 		if err != nil {
 			return layerErr(call.Name, err)
 		}
@@ -240,6 +319,16 @@ func (e *Engine) runPixelTool(call llm.ToolCall, args json.RawMessage, input Pix
 		return e.inspectPixel(opts)
 	}
 	return toolOutcome{Content: fmt.Sprintf("未知像素工具 %q", call.Name), IsError: true}
+}
+
+func pixelTargetID(layerID, frameID, mode string) (string, error) {
+	if mode == pixelAnimMode && layerID == "" {
+		return frameID, nil
+	}
+	if mode != pixelAnimMode && frameID == "" {
+		return layerID, nil
+	}
+	return "", fmt.Errorf("请为当前模式指定正确的画布目标")
 }
 
 func (e *Engine) inspectPixel(opts pixel.InspectOpts) toolOutcome {
@@ -268,6 +357,12 @@ func (e *Engine) inspectPixel(opts pixel.InspectOpts) toolOutcome {
 	layerID := "composite"
 	if opts.Mode == "layer" || (opts.Mode == "crop" && opts.LayerID != "") {
 		layerID = opts.LayerID
+	}
+	if info.Mode == pixelAnimMode {
+		if opts.Mode == "filmstrip" {
+			return pixelJSON(stats)
+		}
+		layerID = opts.FrameID
 	}
 	preview, err := bridge.ReadRegion(layerID, region)
 	if err != nil {

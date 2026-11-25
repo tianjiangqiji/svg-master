@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -30,7 +31,10 @@ func (b *pixelTestBridge) CanvasInfo() PixelCanvasInfo {
 	return PixelCanvasInfo{Width: width, Height: height, HasMainImage: true, RefIDs: []string{"ref_3"}}
 }
 
-func (b *pixelTestBridge) CompositePNG() (string, error) { return "canvas-data", nil }
+func (b *pixelTestBridge) ModelCompositePNG() (string, error) { return "canvas-data", nil }
+func (b *pixelTestBridge) FrameOperation(PixelFrameOperation) (PixelFrameInfo, error) {
+	return PixelFrameInfo{}, nil
+}
 
 func (b *pixelTestBridge) Draw(_ string, _ []pixel.DrawOp, clip *pixel.Selection) (pixel.DrawSummary, error) {
 	b.clip = clip
@@ -148,6 +152,45 @@ func TestPixelDrawRequiresInspectionBeforeSuccess(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "未完成自检") {
 		t.Fatalf("unchecked drawing was reported as complete: %v", err)
 	}
+}
+
+func TestPixelAnimationToolsAndInspectionAfterLastChange(t *testing.T) {
+	for _, animated := range []bool{false, true} {
+		seen := make(map[string]bool)
+		for _, spec := range pixelToolSpecs(animated) {
+			seen[spec.Name] = true
+			if !json.Valid(spec.Parameters) {
+				t.Fatalf("%s schema is invalid JSON", spec.Name)
+			}
+		}
+		if seen[ToolPixelFrameOp] != animated || seen[ToolPixelAnimInfo] != animated || seen[ToolPixelCreateLayer] == animated ||
+			seen[ToolPixelSetLayer] == animated || seen[ToolPixelDeleteLayer] == animated {
+			t.Fatalf("unexpected animation=%v tool set: %v", animated, seen)
+		}
+	}
+	fake := &fakeClient{steps: []fakeStep{
+		toolStep("draw", ToolPixelDraw, map[string]any{"frameId": "F1", "ops": []pixel.DrawOp{{Op: "clear"}}}),
+		toolStep("inspect", ToolPixelInspect, pixel.InspectOpts{Mode: "onion", FrameID: "F1"}),
+		toolStep("duplicate", ToolPixelFrameOp, PixelFrameOperation{Action: "duplicate", FrameID: "F1"}),
+		textStep("完成。"),
+	}}
+	base := &pixelTestBridge{}
+	deps := testDeps(fake, nil)
+	deps.Pixel = animationTestBridge{base}
+	_, err := New(deps).Run(context.Background(), Task{Prompt: "制作动画"})
+	if err == nil || !strings.Contains(err.Error(), "未完成自检") || base.inspect.FrameID != "F1" {
+		t.Fatalf("final frame mutation must be followed by inspection, got %+v and %v", base.inspect, err)
+	}
+}
+
+type animationTestBridge struct {
+	*pixelTestBridge
+}
+
+func (b animationTestBridge) CanvasInfo() PixelCanvasInfo {
+	info := b.pixelTestBridge.CanvasInfo()
+	info.Mode = pixelAnimMode
+	return info
 }
 
 func TestPixelProjectionRetainsCurrentAttachmentsAndToolPairs(t *testing.T) {

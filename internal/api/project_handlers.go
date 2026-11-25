@@ -107,6 +107,14 @@ func (s *Server) snapshot() projectSnapshot {
 				break
 			}
 		}
+		if doc.Pixel.Anim != nil {
+			for _, frame := range doc.Pixel.Anim.Frames {
+				if frame.Elements > 0 {
+					snap.Empty = false
+					break
+				}
+			}
+		}
 	}
 	return snap
 }
@@ -130,10 +138,11 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 // handleProjectOpen 打开工程。
 func (s *Server) handleProjectOpen(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Engine string `json:"engine"`
-		Mode   string `json:"mode"`  // quick | project
-		Dir    string `json:"dir"`   // 工程模式下的工程文件夹
-		Fresh  bool   `json:"fresh"` // 快速模式：是否清空旧内容（默认清）
+		Engine    string `json:"engine"`
+		Mode      string `json:"mode"` // quick | project
+		PixelMode string `json:"pixelMode"`
+		Dir       string `json:"dir"`   // 工程模式下的工程文件夹
+		Fresh     bool   `json:"fresh"` // 快速模式：是否清空旧内容（默认清）
 	}
 	if err := readJSON(r, &in); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -141,6 +150,10 @@ func (s *Server) handleProjectOpen(w http.ResponseWriter, r *http.Request) {
 	}
 	if !projectEngineOK(in.Engine) {
 		writeErr(w, http.StatusBadRequest, "未知工程类型")
+		return
+	}
+	if !pixelModeOK(in.PixelMode) {
+		writeErr(w, http.StatusBadRequest, "未知像素画模式")
 		return
 	}
 	if !s.lockProjectAction(w) {
@@ -151,12 +164,12 @@ func (s *Server) handleProjectOpen(w http.ResponseWriter, r *http.Request) {
 	switch in.Mode {
 	case config.ModeQuick:
 		if in.Engine == project.EnginePixel {
-			err = s.openPixelQuick(in.Fresh)
+			err = s.openPixelQuick(in.Fresh, in.PixelMode)
 		} else if err = s.closeProject(false); err == nil {
 			err = s.openQuick(in.Fresh)
 		}
 	case config.ModeProject:
-		err = s.openProject(in.Dir, in.Engine)
+		err = s.openProject(in.Dir, in.Engine, in.PixelMode)
 	default:
 		writeErr(w, http.StatusBadRequest, "未知模式: "+in.Mode)
 		return
@@ -171,10 +184,11 @@ func (s *Server) handleProjectOpen(w http.ResponseWriter, r *http.Request) {
 // handleProjectCreate 在工程根目录下新建工程文件夹。
 func (s *Server) handleProjectCreate(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Engine string            `json:"engine"`
-		Pixel  *pixelSizePayload `json:"pixel"`
-		Name   string            `json:"name"`
-		Dir    string            `json:"dir"` // 可选：父目录，默认用设置里的工程根目录
+		Engine    string            `json:"engine"`
+		Pixel     *pixelSizePayload `json:"pixel"`
+		PixelMode string            `json:"pixelMode"`
+		Name      string            `json:"name"`
+		Dir       string            `json:"dir"` // 可选：父目录，默认用设置里的工程根目录
 	}
 	if err := readJSON(r, &in); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -207,8 +221,11 @@ func (s *Server) handleProjectCreate(w http.ResponseWriter, r *http.Request) {
 		width, height := 32, 32
 		if in.Pixel != nil {
 			width, height = in.Pixel.Width, in.Pixel.Height
+			if in.PixelMode == "" {
+				in.PixelMode = in.Pixel.Mode
+			}
 		}
-		created, err = project.CreatePixel(parent, name, project.KindUser, width, height)
+		created, err = project.CreatePixel(parent, name, project.KindUser, width, height, in.PixelMode)
 	} else {
 		created, err = project.Create(parent, name, project.KindUser)
 	}
@@ -434,8 +451,13 @@ func applyPixelLayerOperation(p *project.Project, in layerOperation) error {
 }
 
 type pixelSizePayload struct {
-	Width  int `json:"width"`
-	Height int `json:"height"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+	Mode   string `json:"mode"`
+}
+
+func pixelModeOK(mode string) bool {
+	return mode == "" || mode == project.PixelModeStatic || mode == project.PixelModeAnim
 }
 
 func projectEngineOK(engine string) bool {

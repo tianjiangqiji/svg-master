@@ -27,16 +27,19 @@ type pixelAssetView struct {
 }
 
 type pixelSnapshot struct {
-	Width          int              `json:"width"`
-	Height         int              `json:"height"`
-	Palette        []string         `json:"palette"`
-	PrimaryColor   string           `json:"primaryColor,omitempty"`
-	SecondaryColor string           `json:"secondaryColor,omitempty"`
-	MainImage      *pixelAssetView  `json:"mainImage,omitempty"`
-	RefImages      []pixelAssetView `json:"refImages"`
-	Fit            string           `json:"fit,omitempty"`
-	DraftLayerID   string           `json:"draftLayerId,omitempty"`
-	DraftMode      string           `json:"draftMode"`
+	Width          int                    `json:"width"`
+	Height         int                    `json:"height"`
+	Palette        []string               `json:"palette"`
+	PrimaryColor   string                 `json:"primaryColor,omitempty"`
+	SecondaryColor string                 `json:"secondaryColor,omitempty"`
+	MainImage      *pixelAssetView        `json:"mainImage,omitempty"`
+	RefImages      []pixelAssetView       `json:"refImages"`
+	Fit            string                 `json:"fit,omitempty"`
+	DraftLayerID   string                 `json:"draftLayerId,omitempty"`
+	DraftMode      string                 `json:"draftMode"`
+	Mode           string                 `json:"mode"`
+	ModeLocked     bool                   `json:"modeLocked"`
+	Anim           *project.PixelAnimMeta `json:"anim,omitempty"`
 }
 
 func (s *Server) pixelView(p *project.Project, m *project.PixelMeta) *pixelSnapshot {
@@ -44,6 +47,10 @@ func (s *Server) pixelView(p *project.Project, m *project.PixelMeta) *pixelSnaps
 		Width: m.Width, Height: m.Height, Palette: append([]string{}, m.Palette...),
 		PrimaryColor: m.PrimaryColor, SecondaryColor: m.SecondaryColor, DraftMode: m.DraftMode, Fit: m.Fit, DraftLayerID: m.DraftLayerID,
 		RefImages: make([]pixelAssetView, 0, len(m.RefImages)),
+		Mode:      m.Mode, ModeLocked: m.ModeLocked, Anim: m.Anim,
+	}
+	if view.Mode == "" {
+		view.Mode = project.PixelModeStatic
 	}
 	assetView := func(a project.PixelAsset) pixelAssetView {
 		q := url.Values{"id": {a.ID}, "projectId": {p.ID()}, "asset": {a.File}, "k": {s.token}}
@@ -63,9 +70,10 @@ func pixelError(w http.ResponseWriter, err error) {
 	status := http.StatusBadRequest
 	switch {
 	case errors.Is(err, project.ErrPixelRevision), errors.Is(err, project.ErrPixelProject),
-		errors.Is(err, project.ErrLocked), errors.Is(err, project.ErrSVGProject):
+		errors.Is(err, project.ErrLocked), errors.Is(err, project.ErrSVGProject),
+		errors.Is(err, project.ErrPixelModeLocked):
 		status = http.StatusConflict
-	case errors.Is(err, project.ErrNotFound):
+	case errors.Is(err, project.ErrNotFound), errors.Is(err, project.ErrFrameNotFound):
 		status = http.StatusNotFound
 	}
 	writeErr(w, status, err.Error())
@@ -129,9 +137,21 @@ func (s *Server) handlePixelLayer(w http.ResponseWriter, r *http.Request) {
 		if p == nil {
 			return
 		}
-		id := r.URL.Query().Get("id")
-		if r.URL.Query().Get("format") == "rgba" {
-			img, err := p.PixelLayer(id)
+		q := r.URL.Query()
+		id, frameID := q.Get("layerId"), q.Get("frameId")
+		if id == "" {
+			id = q.Get("id")
+		}
+		if id != "" && frameID != "" {
+			writeErr(w, http.StatusBadRequest, "请选择图层或帧")
+			return
+		}
+		if q.Get("format") == "rgba" {
+			read := p.PixelLayer
+			if frameID != "" {
+				read, id = p.PixelFrameImage, frameID
+			}
+			img, err := read(id)
 			if err != nil {
 				pixelError(w, err)
 				return
@@ -139,7 +159,11 @@ func (s *Server) handlePixelLayer(w http.ResponseWriter, r *http.Request) {
 			writePixelBytes(w, "application/octet-stream", img.Pix)
 			return
 		}
-		raw, err := p.PixelLayerPNG(id)
+		read := p.PixelLayerPNG
+		if frameID != "" {
+			read, id = p.PixelFramePNG, frameID
+		}
+		raw, err := read(id)
 		if err != nil {
 			pixelError(w, err)
 			return
@@ -149,6 +173,7 @@ func (s *Server) handlePixelLayer(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			pixelVersion
 			LayerID string      `json:"layerId"`
+			FrameID string      `json:"frameId"`
 			PNG     string      `json:"pngBase64"`
 			RGBA    string      `json:"rgbaBase64"`
 			Region  *pixel.Rect `json:"region"`
@@ -157,8 +182,12 @@ func (s *Server) handlePixelLayer(w http.ResponseWriter, r *http.Request) {
 			pixelError(w, err)
 			return
 		}
-		if in.LayerID == "" || (in.PNG == "") == (in.RGBA == "") {
-			writeErr(w, http.StatusBadRequest, "须指定图层及一种像素数据格式")
+		if (in.LayerID == "") == (in.FrameID == "") || (in.PNG == "") == (in.RGBA == "") {
+			writeErr(w, http.StatusBadRequest, "须指定图层或帧，并提供一种像素数据格式")
+			return
+		}
+		if (in.RGBA != "") != (in.Region != nil) {
+			writeErr(w, http.StatusBadRequest, "RGBA 补丁须指定区域，PNG 用于更新整张画布")
 			return
 		}
 		s.withPixelMutation(w, in.pixelVersion, func(p *project.Project) (map[string]any, error) {
@@ -166,24 +195,59 @@ func (s *Server) handlePixelLayer(w http.ResponseWriter, r *http.Request) {
 			var rgba []byte
 			var err error
 			if in.PNG != "" {
-				data, decodeErr := decodePixelBase64(in.PNG, 2<<20)
+				data, decodeErr := decodePixelBase64(in.PNG, pixel.MaxLayerPNGBytes)
 				if decodeErr != nil {
 					return nil, decodeErr
 				}
 				meta := p.Meta().Pixel
 				img, err = pixel.DecodeLayer(data, meta.Width, meta.Height)
 			} else {
-				rgba, err = decodePixelBase64(in.RGBA, 512*512*4)
+				rgba, err = decodePixelBase64(in.RGBA, 4<<20)
 			}
 			if err != nil {
 				return nil, err
 			}
-			edit, err := p.PixelApplyHuman(in.LayerID, img, in.Region, rgba)
+			apply, id := p.PixelApplyHuman, in.LayerID
+			if in.FrameID != "" {
+				apply, id = p.PixelApplyFrameHuman, in.FrameID
+			}
+			edit, err := apply(id, img, in.Region, rgba)
 			return map[string]any{"humanEdit": edit, "layers": p.Layers()}, err
 		})
 	default:
 		writeErr(w, http.StatusMethodNotAllowed, "需要 GET 或 PUT")
 	}
+}
+
+func (s *Server) handlePixelFrames(w http.ResponseWriter, r *http.Request) {
+	if !pixelPost(w, r) {
+		return
+	}
+	var in struct {
+		pixelVersion
+		project.PixelFrameOp
+		PixelMode string `json:"pixelMode"`
+	}
+	if err := readJSON(r, &in); err != nil {
+		pixelError(w, err)
+		return
+	}
+	s.withPixelMutation(w, in.pixelVersion, func(p *project.Project) (map[string]any, error) {
+		if in.Action == "modeSwitch" && in.PixelMode != "" {
+			in.Mode = in.PixelMode
+		}
+		frame, err := p.PixelFrameOperation(in.PixelFrameOp, false)
+		if err != nil {
+			return nil, err
+		}
+		if in.Action != "active" && in.Action != "fps" && in.Action != "loop" {
+			p.ClearPixelCheckpoint()
+		}
+		if frame.ID == "" {
+			return nil, nil
+		}
+		return map[string]any{"frame": frame}, nil
+	})
 }
 
 func (s *Server) handlePixelResize(w http.ResponseWriter, r *http.Request) {
@@ -342,12 +406,14 @@ func (s *Server) handlePixelCheckpoint(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePixelExport(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Format string `json:"format"`
-		Scale  int    `json:"scale"`
+		Format  string `json:"format"`
+		Scale   int    `json:"scale"`
+		FrameID string `json:"frameId"`
 	}
 	switch r.Method {
 	case http.MethodGet:
 		in.Format = r.URL.Query().Get("format")
+		in.FrameID = r.URL.Query().Get("frameId")
 		if raw := r.URL.Query().Get("scale"); raw != "" {
 			scale, err := strconv.Atoi(raw)
 			if err != nil {
@@ -373,7 +439,16 @@ func (s *Server) handlePixelExport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "请选择 PNG 或 SVG")
 		return
 	}
-	img, err := p.PixelComposite()
+	animated := p.Meta().Pixel.Mode == project.PixelModeAnim
+	if animated && in.Format == "svg" {
+		writeErr(w, http.StatusBadRequest, "像素动图可导出 GIF 或单帧 PNG")
+		return
+	}
+	read := p.PixelComposite
+	if in.FrameID != "" {
+		read = func() (*image.NRGBA, error) { return p.PixelFrameImage(in.FrameID) }
+	}
+	img, err := read()
 	if err != nil {
 		pixelError(w, err)
 		return
@@ -387,7 +462,9 @@ func (s *Server) handlePixelExport(w http.ResponseWriter, r *http.Request) {
 		raw, err = pixel.ExportPNG(img, in.Scale)
 		contentType = "image/png"
 	} else {
-		raw = []byte(pixel.ExportCrispSVG(img))
+		var svg string
+		svg, err = pixel.ExportCrispSVG(img)
+		raw = []byte(svg)
 		contentType = "image/svg+xml"
 	}
 	if err != nil {

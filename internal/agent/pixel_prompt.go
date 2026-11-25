@@ -65,6 +65,8 @@ func (e *Engine) pixelUserMessage(prompt string, input PixelInput, info PixelCan
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		switch {
+		case info.Mode == pixelAnimMode:
+			prompt = "参考当前帧和工程素材，绘制循环像素动画。"
 		case input.DraftMode == "quantize":
 			prompt = "在当前采样底稿上精修，整理色块、边缘和适合分层的部分。"
 		case input.MainImage != nil:
@@ -77,11 +79,21 @@ func (e *Engine) pixelUserMessage(prompt string, input PixelInput, info PixelCan
 	}
 	addText("[用户指令]\n" + prompt)
 	addText(fmt.Sprintf("当前画布尺寸：%d×%d。", info.Width, info.Height))
+	if info.Mode == pixelAnimMode {
+		addText(fmt.Sprintf("当前编辑帧 %s，共 %d 帧，帧率 %d fps。", info.ActiveFrame, len(info.Frames), info.FPS))
+	}
+	if info.Width > 512 || info.Height > 512 {
+		addText("高分辨率画布优先用 rect、polygon、ellipse、flood_fill 或 dither_rect 铺色。总览会缩放，细节请用 crop 分区检查，并用不超过 128×128 的 blit 局部修整。")
+	}
 	if input.DraftMode == "quantize" {
-		addText("当前画布已有量化采样底稿。保留用户修改与构图，在现有图层上按要求精修。")
+		if info.Mode == pixelAnimMode {
+			addText("第 0 帧已有主图采样底稿。保留用户修改与构图，用它作为动作序列的基准。")
+		} else {
+			addText("当前画布已有量化采样底稿。保留用户修改与构图，在现有图层上按要求精修。")
+		}
 	}
 	if strings.TrimSpace(input.HumanEdits) != "" {
-		addText("本次发送前，用户手动修改的图层区域：\n" + input.HumanEdits)
+		addText("本次发送前，用户手动修改的画布区域：\n" + input.HumanEdits)
 	}
 	if choice := input.Selection; choice != nil {
 		description := fmt.Sprintf("当前选区的范围 x=%d, y=%d, w=%d, h=%d。", choice.X, choice.Y, choice.W, choice.H)
@@ -106,8 +118,14 @@ func (e *Engine) pixelUserMessage(prompt string, input PixelInput, info PixelCan
 					break
 				}
 			}
+			for _, frame := range info.Frames {
+				if frame.ID == info.ActiveFrame && frame.Elements > 0 {
+					hasPixels = true
+					break
+				}
+			}
 			if hasPixels || input.DraftMode == "quantize" || input.HumanEdits != "" {
-				png, err := e.deps.Pixel.CompositePNG()
+				png, err := e.deps.Pixel.ModelCompositePNG()
 				if err != nil {
 					return message, fmt.Errorf("读取当前像素画布快照：%w", err)
 				}
@@ -115,7 +133,11 @@ func (e *Engine) pixelUserMessage(prompt string, input PixelInput, info PixelCan
 			}
 		}
 		if snapshot != nil && snapshot.Data != "" {
-			addText("【当前工程的合成画布快照】")
+			if info.Mode == pixelAnimMode {
+				addText("【当前编辑帧快照】")
+			} else {
+				addText("【当前工程的合成画布快照】")
+			}
 			addImage(*snapshot)
 		}
 	}

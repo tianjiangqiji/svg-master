@@ -25,7 +25,6 @@ const (
 	EngineSVG   = "svg"
 	EnginePixel = "pixel"
 
-	maxPixelLayers = 32
 	maxReferences  = 8
 	maxAssetBytes  = 12 << 20
 	maxAssetsBytes = 48 << 20
@@ -36,19 +35,22 @@ var ErrSVGProject = errors.New("此操作仅适用于 SVG 工程")
 var ErrPixelRevision = errors.New("像素工程已发生变化，请同步后重试")
 
 type PixelMeta struct {
-	Width          int          `json:"width"`
-	Height         int          `json:"height"`
-	Revision       uint64       `json:"revision"`
-	Palette        []string     `json:"palette,omitempty"`
-	PrimaryColor   string       `json:"primaryColor,omitempty"`
-	SecondaryColor string       `json:"secondaryColor,omitempty"`
-	MainImage      *PixelAsset  `json:"mainImage,omitempty"`
-	RefImages      []PixelAsset `json:"refImages,omitempty"`
-	NextReference  int          `json:"nextReference,omitempty"`
-	Fit            string       `json:"fit,omitempty"`
-	DraftLayerID   string       `json:"draftLayerId,omitempty"`
-	DraftMode      string       `json:"draftMode,omitempty"`
-	HumanEdits     []HumanEdit  `json:"humanEdits,omitempty"`
+	Width          int            `json:"width"`
+	Height         int            `json:"height"`
+	Revision       uint64         `json:"revision"`
+	Palette        []string       `json:"palette,omitempty"`
+	PrimaryColor   string         `json:"primaryColor,omitempty"`
+	SecondaryColor string         `json:"secondaryColor,omitempty"`
+	MainImage      *PixelAsset    `json:"mainImage,omitempty"`
+	RefImages      []PixelAsset   `json:"refImages,omitempty"`
+	NextReference  int            `json:"nextReference,omitempty"`
+	Fit            string         `json:"fit,omitempty"`
+	DraftLayerID   string         `json:"draftLayerId,omitempty"`
+	DraftMode      string         `json:"draftMode,omitempty"`
+	HumanEdits     []HumanEdit    `json:"humanEdits,omitempty"`
+	Mode           string         `json:"mode,omitempty"`
+	ModeLocked     bool           `json:"modeLocked,omitempty"`
+	Anim           *PixelAnimMeta `json:"anim,omitempty"`
 }
 
 type PixelAsset struct {
@@ -60,8 +62,10 @@ type PixelAsset struct {
 }
 
 type HumanEdit struct {
-	LayerID   string `json:"layerId"`
-	LayerName string `json:"layerName"`
+	LayerID   string `json:"layerId,omitempty"`
+	LayerName string `json:"layerName,omitempty"`
+	FrameID   string `json:"frameId,omitempty"`
+	FrameName string `json:"frameName,omitempty"`
 	pixel.DrawSummary
 	Timestamp int64 `json:"timestamp"`
 }
@@ -89,8 +93,12 @@ func (p *Project) CheckPixelRevision(id string, revision uint64) error {
 	return nil
 }
 
-func CreatePixel(parent, name, kind string, width, height int) (*Project, error) {
-	if err := pixel.ValidateSize(width, height); err != nil {
+func CreatePixel(parent, name, kind string, width, height int, modes ...string) (*Project, error) {
+	mode, err := selectedPixelMode(modes)
+	if err != nil {
+		return nil, err
+	}
+	if err := validatePixelModeSize(mode, width, height); err != nil {
 		return nil, err
 	}
 	name = sanitizeName(name)
@@ -104,15 +112,19 @@ func CreatePixel(parent, name, kind string, width, height int) (*Project, error)
 	if err != nil {
 		return nil, err
 	}
-	return initPixel(dir, name, kind, width, height)
+	return initPixel(dir, name, kind, width, height, mode)
 }
 
 func QuickPixelRoot(dataDir string) string { return filepath.Join(dataDir, "quick-pixel") }
 
-func OpenQuickPixel(dataDir string, fresh bool) (*Project, error) {
+func OpenQuickPixel(dataDir string, fresh bool, modes ...string) (*Project, error) {
+	mode, err := selectedPixelMode(modes)
+	if err != nil {
+		return nil, err
+	}
 	dir := QuickPixelRoot(dataDir)
 	if _, err := os.Stat(filepath.Join(dir, "project.json")); errors.Is(err, os.ErrNotExist) {
-		return initPixel(dir, "像素画草稿", KindQuick, 32, 32)
+		return initPixel(dir, "像素画草稿", KindQuick, pixel.DefaultW, pixel.DefaultH, mode)
 	} else if err != nil {
 		return nil, err
 	}
@@ -124,12 +136,14 @@ func OpenQuickPixel(dataDir string, fresh bool) (*Project, error) {
 		return nil, ErrPixelProject
 	}
 	if fresh {
-		err = p.ResetPixel()
+		err = p.ResetPixel(modes...)
+	} else if len(modes) > 0 && modes[0] != "" {
+		err = p.PixelSetMode(mode, false)
 	}
 	return p, err
 }
 
-func initPixel(dir, name, kind string, width, height int) (*Project, error) {
+func initPixel(dir, name, kind string, width, height int, mode string) (*Project, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
@@ -137,13 +151,13 @@ func initPixel(dir, name, kind string, width, height int) (*Project, error) {
 	f := newFile(dir, kind)
 	f.Name = name
 	f.Engine = EnginePixel
-	f.Pixel = &PixelMeta{Width: width, Height: height, DraftMode: "vision"}
+	f.Pixel = &PixelMeta{Width: width, Height: height, DraftMode: "vision", Mode: mode}
 	f.Canvas = pixelCanvas(width, height)
 	img, err := pixel.New(width, height)
 	if err != nil {
 		return nil, err
 	}
-	next, resources, _, err := addPixelLayer(f, "背景", "", 0, img)
+	next, resources, err := emptyPixelCanvas(f, img)
 	if err != nil {
 		return nil, err
 	}
@@ -169,6 +183,7 @@ func clonePixel(meta *PixelMeta) *PixelMeta {
 		main := *meta.MainImage
 		out.MainImage = &main
 	}
+	out.Anim = clonePixelAnim(meta.Anim)
 	return &out
 }
 
@@ -183,11 +198,21 @@ func checkPixelFile(f File) error {
 	if f.Pixel == nil {
 		return errors.New("像素工程缺少画布信息")
 	}
-	if err := pixel.ValidateSize(f.Pixel.Width, f.Pixel.Height); err != nil {
+	if err := validatePixelModeSize(f.Pixel.Mode, f.Pixel.Width, f.Pixel.Height); err != nil {
 		return err
 	}
-	if len(f.Layers) > maxPixelLayers || len(f.Pixel.RefImages) > maxReferences {
-		return errors.New("像素工程的图层或参考图超出上限")
+	if f.Pixel.Mode == PixelModeAnim {
+		if err := checkPixelAnim(f); err != nil {
+			return err
+		}
+	} else if f.Pixel.Anim != nil {
+		return errors.New("静态像素工程不能包含动图帧序列")
+	}
+	if err := checkPixelLayerCapacity(f.Pixel.Width, f.Pixel.Height, len(f.Layers)); err != nil {
+		return err
+	}
+	if len(f.Pixel.RefImages) > maxReferences {
+		return errors.New("像素工程的参考图超出上限")
 	}
 	for _, l := range f.Layers {
 		if !localPixelName(l.File) || !strings.EqualFold(filepath.Ext(l.File), ".png") {
@@ -220,6 +245,11 @@ func pixelResources(f File) map[string]struct{} {
 	}
 	for _, l := range f.Layers {
 		out[filepath.Join("layers", l.File)] = struct{}{}
+	}
+	if f.Pixel.Anim != nil {
+		for _, frame := range f.Pixel.Anim.Frames {
+			out[filepath.Join("frames", frame.File)] = struct{}{}
+		}
 	}
 	for _, a := range pixelAssets(f.Pixel) {
 		out[filepath.Join("assets", a.File)] = struct{}{}
@@ -256,6 +286,7 @@ func (p *Project) commitPixelLocked(next File, resources map[string][]byte) erro
 	}
 	old := pixelResources(p.file)
 	p.file = next
+	p.pixelComposite = nil
 	committed = true
 	for rel := range pixelResources(next) {
 		delete(old, rel)
@@ -294,6 +325,9 @@ func writePixelFile(path string, data []byte) error {
 func pixelPNG(img *image.NRGBA) ([]byte, error) {
 	var out bytes.Buffer
 	enc := png.Encoder{CompressionLevel: png.BestSpeed}
+	if img.Bounds().Dx()*img.Bounds().Dy() > pixel.MaxAnimSize*pixel.MaxAnimSize {
+		enc.CompressionLevel = png.DefaultCompression
+	}
 	if err := enc.Encode(&out, img); err != nil {
 		return nil, err
 	}
@@ -321,8 +355,11 @@ func updatePixelLayer(f *File, index int, img *image.NRGBA) (map[string][]byte, 
 }
 
 func addPixelLayer(f File, name, blend string, index int, img *image.NRGBA) (File, map[string][]byte, Layer, error) {
-	if len(f.Layers) >= maxPixelLayers {
-		return f, nil, Layer{}, fmt.Errorf("像素工程最多支持 %d 个图层", maxPixelLayers)
+	if f.Pixel.Mode == PixelModeAnim {
+		return f, nil, Layer{}, ErrPixelStatic
+	}
+	if err := checkPixelLayerCapacity(f.Pixel.Width, f.Pixel.Height, len(f.Layers)+1); err != nil {
+		return f, nil, Layer{}, err
 	}
 	if blend == "" {
 		blend = "normal"
@@ -383,7 +420,7 @@ func (p *Project) PixelLayerPNG(id string) ([]byte, error) {
 }
 
 func (p *Project) readPixelLayerLocked(i int) ([]byte, error) {
-	return readPixelFile(filepath.Join(p.dir, "layers", p.file.Layers[i].File), 2<<20)
+	return readPixelFile(filepath.Join(p.dir, "layers", p.file.Layers[i].File), pixel.MaxLayerPNGBytes)
 }
 
 func readPixelFile(name string, maxBytes int64) ([]byte, error) {
@@ -423,6 +460,20 @@ func (p *Project) PixelComposite() (*image.NRGBA, error) {
 	if p.file.Pixel == nil {
 		return nil, ErrPixelProject
 	}
+	if p.pixelComposite == nil || p.pixelCompositeRevision != p.file.Pixel.Revision {
+		img, err := p.composePixelLocked()
+		if err != nil {
+			return nil, err
+		}
+		p.pixelComposite, p.pixelCompositeRevision = img, p.file.Pixel.Revision
+	}
+	return copyPixelImage(p.pixelComposite), nil
+}
+
+func (p *Project) composePixelLocked() (*image.NRGBA, error) {
+	if p.file.Pixel.Mode == PixelModeAnim {
+		return p.pixelFrameImageLocked(pixelFrameIndex(p.file.Pixel.Anim, ""))
+	}
 	layers := make([]pixel.Layer, 0, len(p.file.Layers))
 	for i, l := range p.file.Layers {
 		if !l.Visible || l.Opacity == 0 {
@@ -435,6 +486,16 @@ func (p *Project) PixelComposite() (*image.NRGBA, error) {
 		layers = append(layers, pixel.Layer{Image: img, Visible: true, Opacity: l.Opacity, Blend: l.Blend})
 	}
 	return pixel.Composite(p.file.Pixel.Width, p.file.Pixel.Height, layers)
+}
+
+func copyPixelImage(img *image.NRGBA) *image.NRGBA {
+	clone := image.NewNRGBA(img.Rect)
+	for y := img.Rect.Min.Y; y < img.Rect.Max.Y; y++ {
+		src := img.PixOffset(img.Rect.Min.X, y)
+		dst := clone.PixOffset(clone.Rect.Min.X, y)
+		copy(clone.Pix[dst:dst+clone.Stride], img.Pix[src:src+clone.Stride])
+	}
+	return clone
 }
 
 func (p *Project) PixelAddLayer(name, blend string, index int, img *image.NRGBA) (Layer, error) {
@@ -582,6 +643,9 @@ func (p *Project) PixelReorder(ids []string) error {
 	if f.Pixel == nil {
 		return ErrPixelProject
 	}
+	if f.Pixel.Mode == PixelModeAnim {
+		return ErrPixelStatic
+	}
 	if len(ids) != len(f.Layers) {
 		return errors.New("排序必须包含所有图层")
 	}
@@ -644,15 +708,31 @@ func (p *Project) PixelApplyHuman(id string, img *image.NRGBA, region *pixel.Rec
 	if err != nil {
 		return HumanEdit{}, err
 	}
+	after, err := applyHumanRaster(before, img, region, rgba)
+	if err != nil {
+		return HumanEdit{}, err
+	}
+	edit := newHumanEdit(layer.ID, layer.Name, before, after)
+	if edit.ChangedPixels == 0 {
+		return edit, nil
+	}
+	f.Pixel.recordHumanEdit(edit)
+	resources, err := updatePixelLayer(&f, i, after)
+	if err != nil {
+		return HumanEdit{}, err
+	}
+	return edit, p.commitPixelLocked(f, resources)
+}
+
+func applyHumanRaster(before, img *image.NRGBA, region *pixel.Rect, rgba []byte) (*image.NRGBA, error) {
 	after := img
 	if img == nil {
 		if region == nil || region.W < 1 || region.H < 1 || region.X < 0 || region.Y < 0 ||
-			region.W > f.Pixel.Width-region.X || region.H > f.Pixel.Height-region.Y ||
+			region.W > before.Rect.Dx()-region.X || region.H > before.Rect.Dy()-region.Y ||
 			len(rgba) != region.W*region.H*4 {
-			return HumanEdit{}, errors.New("图层更新区域或 RGBA 长度无效")
+			return nil, errors.New("像素更新区域或 RGBA 长度无效")
 		}
-		after = image.NewNRGBA(before.Rect)
-		copy(after.Pix, before.Pix)
+		after = copyPixelImage(before)
 		row := region.W * 4
 		for y := 0; y < region.H; y++ {
 			start := after.PixOffset(region.X, region.Y+y)
@@ -660,22 +740,23 @@ func (p *Project) PixelApplyHuman(id string, img *image.NRGBA, region *pixel.Rec
 		}
 	}
 	if after.Bounds() != before.Bounds() {
-		return HumanEdit{}, errors.New("图层尺寸与像素画布不一致")
+		return nil, errors.New("图层或帧的尺寸与像素画布不一致")
 	}
-	summary := pixel.Changes(before, after)
-	edit := HumanEdit{LayerID: layer.ID, LayerName: layer.Name, DrawSummary: summary, Timestamp: time.Now().UnixNano()}
-	if summary.ChangedPixels == 0 {
-		return edit, nil
+	return after, nil
+}
+
+func newHumanEdit(layerID, layerName string, before, after *image.NRGBA) HumanEdit {
+	return HumanEdit{
+		LayerID: layerID, LayerName: layerName,
+		DrawSummary: pixel.Changes(before, after), Timestamp: time.Now().UnixNano(),
 	}
-	f.Pixel.HumanEdits = append(f.Pixel.HumanEdits, edit)
-	if len(f.Pixel.HumanEdits) > 10 {
-		f.Pixel.HumanEdits = f.Pixel.HumanEdits[len(f.Pixel.HumanEdits)-10:]
+}
+
+func (m *PixelMeta) recordHumanEdit(edit HumanEdit) {
+	m.HumanEdits = append(m.HumanEdits, edit)
+	if len(m.HumanEdits) > 10 {
+		m.HumanEdits = m.HumanEdits[len(m.HumanEdits)-10:]
 	}
-	resources, err := updatePixelLayer(&f, i, after)
-	if err != nil {
-		return HumanEdit{}, err
-	}
-	return edit, p.commitPixelLocked(f, resources)
 }
 
 func (p *Project) PixelResize(w, h int, mode string) error {
@@ -685,7 +766,10 @@ func (p *Project) PixelResize(w, h int, mode string) error {
 	if f.Pixel == nil {
 		return ErrPixelProject
 	}
-	if err := pixel.ValidateSize(w, h); err != nil {
+	if err := validatePixelModeSize(f.Pixel.Mode, w, h); err != nil {
+		return err
+	}
+	if err := checkPixelLayerCapacity(w, h, len(f.Layers)); err != nil {
 		return err
 	}
 	if mode != "crop" && mode != "resample" {
@@ -695,6 +779,25 @@ func (p *Project) PixelResize(w, h int, mode string) error {
 		return nil
 	}
 	resources := make(map[string][]byte, len(f.Layers))
+	if anim := f.Pixel.Anim; anim != nil {
+		for i := range anim.Frames {
+			img, err := p.pixelFrameImageLocked(i)
+			if err != nil {
+				return err
+			}
+			resized, err := pixel.Resize(img, w, h, mode)
+			if err != nil {
+				return err
+			}
+			data, err := setFrameRaster(&anim.Frames[i], resized)
+			if err != nil {
+				return err
+			}
+			for rel, raw := range data {
+				resources[rel] = raw
+			}
+		}
+	}
 	for i := range f.Layers {
 		img, err := p.pixelLayerLocked(i)
 		if err != nil {
@@ -893,6 +996,9 @@ func (p *Project) PixelQuantize(opts pixel.QuantizeOpts, name string) error {
 	f.Pixel.Palette = palette
 	f.Pixel.DraftMode = "quantize"
 	f.Pixel.Fit = opts.Fit
+	if f.Pixel.Anim != nil {
+		return p.quantizePixelFrameLocked(f, name, img)
+	}
 	oldIndex := pixelLayerIndex(f, f.Pixel.DraftLayerID)
 	position := 1
 	if f.Pixel.DraftLayerID != "" && oldIndex >= 0 {
@@ -909,14 +1015,25 @@ func (p *Project) PixelQuantize(opts pixel.QuantizeOpts, name string) error {
 	return p.commitPixelLocked(next, resources)
 }
 
-func (p *Project) ResetPixel() error {
+func (p *Project) ResetPixel(modes ...string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	f := p.clonePixelFileLocked()
 	if f.Pixel == nil {
 		return ErrPixelProject
 	}
+	if len(modes) > 0 && modes[0] != "" {
+		mode, err := selectedPixelMode(modes)
+		if err != nil {
+			return err
+		}
+		if err := validatePixelModeSize(mode, f.Pixel.Width, f.Pixel.Height); err != nil {
+			return err
+		}
+		f.Pixel.Mode = mode
+	}
 	f.Layers = nil
+	f.ActiveLayer = ""
 	f.History = nil
 	f.ContextCleared = time.Now().UnixNano()
 	f.Pixel.HumanEdits = nil
@@ -925,11 +1042,13 @@ func (p *Project) ResetPixel() error {
 	f.Pixel.DraftMode = "vision"
 	f.Pixel.DraftLayerID = ""
 	f.Pixel.Fit = ""
+	f.Pixel.ModeLocked = false
+	f.Pixel.Anim = nil
 	img, err := pixel.New(f.Pixel.Width, f.Pixel.Height)
 	if err != nil {
 		return err
 	}
-	next, resources, _, err := addPixelLayer(f, "背景", "", 0, img)
+	next, resources, err := emptyPixelCanvas(f, img)
 	if err != nil {
 		return err
 	}
@@ -937,6 +1056,7 @@ func (p *Project) ResetPixel() error {
 		return err
 	}
 	p.pixelUndo, p.pixelRedo = nil, nil
+	p.pixelPending = nil
 	return nil
 }
 
@@ -946,12 +1066,24 @@ type pixelCheckpoint struct {
 	active       string
 	palette      []string
 	draftLayerID string
+	anim         *PixelAnimMeta
 }
 
 func (p *Project) capturePixelLocked() (*pixelCheckpoint, error) {
 	checkpoint := &pixelCheckpoint{
 		layers: slices.Clone(p.file.Layers), active: p.file.ActiveLayer,
 		palette: slices.Clone(p.file.Pixel.Palette), draftLayerID: p.file.Pixel.DraftLayerID,
+		anim: clonePixelAnim(p.file.Pixel.Anim),
+	}
+	if checkpoint.anim != nil {
+		for i := range checkpoint.anim.Frames {
+			raw, err := p.readPixelFrameLocked(i)
+			if err != nil {
+				return nil, err
+			}
+			checkpoint.data = append(checkpoint.data, raw)
+		}
+		return checkpoint, nil
 	}
 	for i := range checkpoint.layers {
 		raw, err := p.readPixelLayerLocked(i)
@@ -974,8 +1106,9 @@ func (p *Project) BeginPixelTurn(mode string) error {
 	if err != nil {
 		return err
 	}
-	if f.Pixel.DraftMode != mode {
+	if f.Pixel.DraftMode != mode || !f.Pixel.ModeLocked {
 		f.Pixel.DraftMode = mode
+		f.Pixel.ModeLocked = true
 		if err := p.commitPixelLocked(f, nil); err != nil {
 			return err
 		}
@@ -992,16 +1125,20 @@ func (p *Project) EndPixelTurn(history []llm.Message, success bool) error {
 		return ErrPixelProject
 	}
 	pending := p.pixelPending
-	p.pixelPending = nil
-	if !slices.Equal(pending.layers, f.Layers) || !slices.Equal(pending.palette, f.Pixel.Palette) ||
-		pending.active != f.ActiveLayer {
-		p.pixelUndo, p.pixelRedo = pending, nil
-	}
+	changed := !slices.Equal(pending.layers, f.Layers) || !slices.Equal(pending.palette, f.Pixel.Palette) ||
+		pending.active != f.ActiveLayer || !samePixelAnimation(pending.anim, f.Pixel.Anim)
 	f.History = historyRecords(history)
 	if success {
 		f.Pixel.HumanEdits = nil
 	}
-	return p.commitPixelLocked(f, nil)
+	if err := p.commitPixelLocked(f, nil); err != nil {
+		return err
+	}
+	p.pixelPending = nil
+	if changed {
+		p.pixelUndo, p.pixelRedo = pending, nil
+	}
+	return nil
 }
 
 func (p *Project) ClearPixelCheckpoint() {
@@ -1037,10 +1174,22 @@ func (p *Project) PixelCheckpoint(action string) error {
 	f.ActiveLayer = target.active
 	f.Pixel.Palette = slices.Clone(target.palette)
 	f.Pixel.DraftLayerID = target.draftLayerID
+	anim := clonePixelAnim(target.anim)
+	if anim != nil && f.Pixel.Anim != nil {
+		anim.FPS, anim.Loop = f.Pixel.Anim.FPS, f.Pixel.Anim.Loop
+	}
+	f.Pixel.Anim = anim
 	// The next model turn reads the restored canvas even if its previous tool calls
 	// are still visible in the conversation history.
 	f.ContextCleared = time.Now().UnixNano()
 	resources := make(map[string][]byte, len(f.Layers))
+	if anim := f.Pixel.Anim; anim != nil {
+		for i := range anim.Frames {
+			for rel, raw := range storeFramePNG(&anim.Frames[i], target.data[i]) {
+				resources[rel] = raw
+			}
+		}
+	}
 	for i := range f.Layers {
 		l := &f.Layers[i]
 		l.File = pixelLayerFile(l.ID)
@@ -1093,7 +1242,11 @@ func (p *Project) savePixelAsLocked(target string) error {
 	}
 	defer os.RemoveAll(staging)
 	for rel := range pixelResources(p.file) {
-		raw, err := readPixelFile(filepath.Join(p.dir, rel), maxAssetBytes)
+		limit := int64(pixel.MaxLayerPNGBytes)
+		if filepath.Dir(rel) == "assets" {
+			limit = maxAssetBytes
+		}
+		raw, err := readPixelFile(filepath.Join(p.dir, rel), limit)
 		if err != nil {
 			return err
 		}
@@ -1125,6 +1278,7 @@ func (p *Project) savePixelAsLocked(target string) error {
 		return err
 	}
 	p.file, p.dir, p.kind = next, target, KindUser
+	p.pixelComposite = nil
 	return nil
 }
 

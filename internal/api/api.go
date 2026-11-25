@@ -146,6 +146,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/layers", s.handleLayers)
 	mux.HandleFunc("/api/layers/ops", s.handleLayerOps)
 	mux.HandleFunc("/api/pixel/layer", s.handlePixelLayer)
+	mux.HandleFunc("/api/pixel/frames", s.handlePixelFrames)
 	mux.HandleFunc("/api/pixel/resize", s.handlePixelResize)
 	mux.HandleFunc("/api/pixel/quantize", s.handlePixelQuantize)
 	mux.HandleFunc("/api/pixel/palette", s.handlePixelPalette)

@@ -154,17 +154,28 @@ async function main() {
       for await (const chunk of stream) chunks.push(chunk);
       return Buffer.concat(chunks);
     };
+    const createProject = async (name, width, height, mode = 'static') => {
+      await button('btnProjNew').click();
+      await button('projNameInput').fill(name);
+      await button('pixelProjectMode').selectOption(mode);
+      await button('pixelProjectWidth').fill(String(width));
+      await button('pixelProjectHeight').fill(String(height));
+      const response = page.waitForResponse((result) => new URL(result.url()).pathname === '/api/project/create');
+      await button('btnProjCreate').click();
+      assert.ok((await response).ok(), 'Create the ' + mode + ' pixel project');
+      await button('modalProject').waitFor({ state: 'hidden' });
+      await button('pixelStage').waitFor({ state: 'visible' });
+      await tillSaved();
+      return snapshot();
+    };
+    const assertPNGSize = (png, width, height) => {
+      assert.equal(png.subarray(1, 4).toString(), 'PNG');
+      assert.deepEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [width, height]);
+    };
 
     await page.goto(workspace.href);
     await button('projectWorkspacePixel').click();
-    await button('btnProjNew').click();
-    await button('projNameInput').fill('像素协同验收');
-    await button('pixelProjectWidth').fill('256');
-    await button('pixelProjectHeight').fill('256');
-    await button('btnProjCreate').click();
-    await button('pixelStage').waitFor({ state: 'visible' });
-    await tillSaved();
-    const created = await snapshot();
+    const created = await createProject('像素协同验收', 256, 256);
     assert.equal(created.engine, 'pixel');
     assert.deepEqual([created.pixel.width, created.pixel.height], [256, 256]);
     assert.equal(await button('btnSave').isVisible(), false);
@@ -245,9 +256,7 @@ async function main() {
     await button('pixelRedo').click();
     await tillSaved();
     await untilControlEnabled('pixelExportPNG');
-    const png = await download('pixelExportPNG');
-    assert.equal(png.subarray(1, 4).toString(), 'PNG');
-    assert.deepEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [256, 256]);
+    assertPNGSize(await download('pixelExportPNG'), 256, 256);
     const svg = await download('pixelExportSVG');
     assert.match(svg.toString(), /shape-rendering="crispEdges"/);
     await button('pixelSave').click();
@@ -273,8 +282,64 @@ async function main() {
     }
     await button('pixelDraft').selectOption('prompt');
     assert.equal((await run('画一枚 16 像素大小的红色徽章。')).pixelDraftMode, 'prompt');
+
+    await page.unroute('**/api/project/browse');
+    await page.route('**/api/project/browse', (route) => route.fulfill({ json: { path: directory } }));
+    await button('btnProject').click();
+    const large = await createProject('超大画布验收', 2048, 2048);
+    assert.deepEqual([large.pixel.width, large.pixel.height], [2048, 2048]);
+    const presets = await button('pixelSizePreset').locator('option').allTextContents();
+    assert.equal(presets.at(-1), '1024×1024', 'The preset list caps at 1024 while custom dimensions reach 2048');
+    assert.match(await button('layerMeta').textContent(), /1 \/ 14/);
+    await button('pixelActual').click();
+    await pressTool('pencil');
+    const viewport = await button('pixelViewport').boundingBox();
+    const stage = await button('pixelStage').boundingBox();
+    const middle = { x: viewport.x + viewport.width / 2, y: viewport.y + viewport.height / 2 };
+    const cx = Math.floor((middle.x - stage.x) * 2048 / stage.width);
+    const cy = Math.floor((middle.y - stage.y) * 2048 / stage.height);
+    const nextBrush = page.waitForRequest((request) => request.method() === 'PUT' && new URL(request.url()).pathname === '/api/pixel/layer');
+    await hit(cx, cy);
+    const brush = (await nextBrush).postDataJSON();
+    await tillSaved();
+    assert.deepEqual(brush.region, { x: cx, y: cy, w: 1, h: 1 });
+    assert.ok(brush.rgbaBase64 && !brush.pngBase64);
+    await pressTool('fill');
+    const nextFill = page.waitForRequest((request) => request.method() === 'PUT' && new URL(request.url()).pathname === '/api/pixel/layer');
+    await hit(cx + 12, cy + 12);
+    const fill = (await nextFill).postDataJSON();
+    await tillSaved();
+    assert.ok(fill.pngBase64 && !fill.rgbaBase64, 'A large fill uploads a compressed PNG');
+    async function largePixel(x, y) {
+      const state = await snapshot();
+      const data = await raster(state, state.activeLayer);
+      return data[(y * 2048 + x) * 4 + 3];
+    }
+    assert.equal(await largePixel(cx + 12, cy + 12), 255);
+    await button('pixelUndo').click();
+    await tillSaved();
+    assert.equal(await largePixel(cx + 12, cy + 12), 0);
+    assert.equal(await largePixel(cx, cy), 255, 'Undo keeps pixels from the previous brush stroke');
+    await button('pixelRedo').click();
+    await tillSaved();
+    assert.equal(await largePixel(cx + 12, cy + 12), 255);
+    assert.ok(await button('pixelExportScale').locator('option').filter({ hasText: /^8×$/ }).isDisabled());
+    assertPNGSize(await download('pixelExportPNG'), 2048, 2048);
+    await button('pixelExportScale').selectOption('4×');
+    assertPNGSize(await download('pixelExportPNG'), 8192, 8192);
+    const ruler = await button('pixelRulerX').evaluate((canvas) => ({
+      width: canvas.width, viewport: document.getElementById('pixelViewport').clientWidth,
+    }));
+    assert.ok(ruler.width > 0 && ruler.width <= ruler.viewport + 2);
+    for (let count = 2; count <= 14; count++) {
+      await button('btnAddLayer').click();
+      await page.waitForFunction((target) => document.getElementById('layerMeta').textContent.startsWith(target + ' / 14'), count);
+      await tillSaved();
+    }
+    assert.ok(await button('btnAddLayer').isDisabled());
+    assert.match(await button('btnAddLayer').getAttribute('title'), /14/);
     assert.deepEqual(errors, []);
-    console.log('PASS Pixel Studio create, navigation, assets, sampling, drawing, selection, AI, undo/redo, export and reopen');
+    console.log('PASS Pixel Studio navigation, assets, drawing, AI, undo/redo, reopen and 2048 × 2048 editing/export');
   } finally {
     if (browser) await browser.close();
     await fs.rm(directory, { recursive: true, force: true });

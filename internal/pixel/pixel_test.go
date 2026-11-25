@@ -137,7 +137,7 @@ func TestCompositeAndExactExport(t *testing.T) {
 	checkPixel(t, decoded, 4, 4, "#36AB8701")
 	checkPixel(t, decoded, 11, 7, "#36AB8701")
 	checkPixel(t, decoded, 12, 7, "#00000000")
-	if svg := ExportCrispSVG(raster); !strings.Contains(svg, `fill-opacity="0.00392157"`) || !strings.Contains(svg, `x="1" y="1" width="2"`) || strings.Count(svg, "<rect ") != 1 {
+	if svg, err := ExportCrispSVG(raster); err != nil || !strings.Contains(svg, `fill-opacity="0.00392157"`) || !strings.Contains(svg, `x="1" y="1" width="2"`) || strings.Count(svg, "<rect ") != 1 {
 		t.Fatalf("SVG did not preserve straight alpha and a single horizontal run: %s", svg)
 	}
 }
@@ -177,7 +177,7 @@ func TestQuantizationAndResize(t *testing.T) {
 	}
 	checkPixel(t, resized, 7, 5, "#FF0000")
 	checkPixel(t, resized, 511, 199, "#00000000")
-	if _, err := New(513, 8); err == nil {
+	if _, err := New(MaxSize+1, 8); err == nil {
 		t.Fatal("canvas over maximum size accepted")
 	}
 }

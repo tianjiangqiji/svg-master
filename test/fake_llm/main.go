@@ -214,12 +214,14 @@ func openAIResponses(w http.ResponseWriter, r *http.Request) {
 // pixelResponses uses the most recent user turn to exercise draw, inspect and the image output.
 func pixelResponses(w http.ResponseWriter, body map[string]any) bool {
 	tools, _ := body["tools"].([]any)
-	pixelMode := false
+	pixelMode, animated := false, false
 	for _, item := range tools {
 		tool, _ := item.(map[string]any)
-		if tool["name"] == "pixel_draw" {
+		switch tool["name"] {
+		case "pixel_draw":
 			pixelMode = true
-			break
+		case "pixel_anim_info":
+			animated = true
 		}
 	}
 	if !pixelMode {
@@ -249,13 +251,20 @@ func pixelResponses(w http.ResponseWriter, body map[string]any) bool {
 	emit(w, "response.created", map[string]any{
 		"type": "response.created", "response": map[string]any{"id": responseID},
 	})
-	if step < 2 {
+	steps := 2
+	if animated {
+		steps = 8
+	}
+	if step < steps {
 		name, args := "pixel_inspect", map[string]any{"mode": "composite"}
 		if step == 0 {
 			name = "pixel_draw"
 			args = map[string]any{"ops": []any{
 				map[string]any{"op": "rect", "x": 0, "y": 0, "w": 48, "h": 48, "color": []string{"#FF477E", "#21DA78", "#4567DC"}[(max(1, turn)-1)%3], "fill": true},
 			}}
+		}
+		if animated {
+			name, args = fakePixelAnimationStep(step)
 		}
 		emit(w, "response.output_item.done", map[string]any{
 			"type": "response.output_item.done", "output_index": 0,
@@ -277,6 +286,26 @@ func pixelResponses(w http.ResponseWriter, body map[string]any) bool {
 		},
 	})
 	return true
+}
+
+func fakePixelAnimationStep(step int) (string, map[string]any) {
+	switch step {
+	case 0:
+		return "pixel_anim_info", map[string]any{}
+	case 1:
+		return "pixel_draw", map[string]any{"ops": []any{
+			map[string]any{"op": "clear"},
+			map[string]any{"op": "rect", "x": 1, "y": 1, "w": 3, "h": 3, "color": "#FF477E", "fill": true},
+		}}
+	case 2, 4:
+		return "pixel_frame_op", map[string]any{"action": "duplicate"}
+	case 3, 5:
+		return "pixel_frame_op", map[string]any{"action": "shift", "dx": 3, "dy": 0, "wrap": true}
+	case 6:
+		return "pixel_inspect", map[string]any{"mode": "onion"}
+	default:
+		return "pixel_inspect", map[string]any{"mode": "filmstrip"}
+	}
 }
 
 // ---------- Anthropic Messages ----------

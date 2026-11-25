@@ -15,11 +15,19 @@ import (
 )
 
 const (
-	MinSize     = 8
-	MaxSize     = 512
-	DefaultW    = 32
-	DefaultH    = 32
-	MaxReadSpan = 32
+	MinSize         = 8
+	MaxPresetSize   = 1024
+	MaxSize         = 2048
+	MaxAnimSize     = 512
+	DefaultW        = 32
+	DefaultH        = 32
+	MaxReadSpan     = 32
+	MaxBlitSpan     = 128
+	MaxExportSide   = 8192
+	MaxExportPixels = 64 << 20
+	// PNG row filters and DEFLATE framing can slightly exceed the raw RGBA size.
+	MaxLayerPNGBytes = (16 << 20) + (64 << 10)
+	maxCrispSVGRects = 250000
 
 	MaxAssetBytes  = 16 << 20
 	maxAssetSide   = 8192
@@ -111,8 +119,8 @@ func DecodeLayer(data []byte, w, h int) (*image.NRGBA, error) {
 	if err := ValidateSize(w, h); err != nil {
 		return nil, err
 	}
-	if len(data) > 4<<20 {
-		return nil, fmt.Errorf("像素图层 PNG 不得超过 4 MiB")
+	if len(data) > MaxLayerPNGBytes {
+		return nil, fmt.Errorf("像素图层 PNG 超过 %d 字节的大小上限", MaxLayerPNGBytes)
 	}
 	cfg, err := png.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
@@ -156,6 +164,41 @@ func Resize(src *image.NRGBA, w, h int, mode string) (*image.NRGBA, error) {
 		return nil, fmt.Errorf("未知画布调整方式 %q", mode)
 	}
 	return out, nil
+}
+
+// Shift returns a copy translated by whole pixels, with transparent edges unless wrap is enabled.
+func Shift(img *image.NRGBA, dx, dy int, wrap bool) *image.NRGBA {
+	if img == nil {
+		return nil
+	}
+	bounds := img.Bounds()
+	out := image.NewNRGBA(bounds)
+	w, h := bounds.Dx(), bounds.Dy()
+	if bounds.Empty() {
+		return out
+	}
+	if wrap {
+		dx, dy = (dx%w+w)%w, (dy%h+h)%h
+		for y := 0; y < h; y++ {
+			src := img.PixOffset(bounds.Min.X, bounds.Min.Y+y)
+			dst := out.PixOffset(bounds.Min.X, bounds.Min.Y+(y+dy)%h)
+			split := (w - dx) * 4
+			copy(out.Pix[dst+dx*4:dst+w*4], img.Pix[src:src+split])
+			copy(out.Pix[dst:dst+dx*4], img.Pix[src+split:src+w*4])
+		}
+		return out
+	}
+	if dx <= -w || dx >= w || dy <= -h || dy >= h {
+		return out
+	}
+	for y := max(0, -dy); y < min(h, h-dy); y++ {
+		x := max(0, -dx)
+		src := img.PixOffset(bounds.Min.X+x, bounds.Min.Y+y)
+		dst := out.PixOffset(bounds.Min.X+x+dx, bounds.Min.Y+y+dy)
+		length := (min(w, w-dx) - x) * 4
+		copy(out.Pix[dst:dst+length], img.Pix[src:src+length])
+	}
+	return out
 }
 
 func ParseColor(s string) (color.NRGBA, error) {
@@ -291,6 +334,10 @@ func ExportPNG(img *image.NRGBA, scale int) ([]byte, error) {
 	default:
 		return nil, fmt.Errorf("PNG 倍率必须为 1、2、4、8 或 16")
 	}
+	b := img.Bounds()
+	if b.Dx() > MaxExportSide/scale || b.Dy() > MaxExportSide/scale || b.Dx()*scale*b.Dy()*scale > MaxExportPixels {
+		return nil, fmt.Errorf("当前画布的 %d 倍 PNG 导出超过单边 %d 像素或总计 %d 像素的上限，请降低导出倍率", scale, MaxExportSide, MaxExportPixels)
+	}
 	var buf bytes.Buffer
 	enc := png.Encoder{CompressionLevel: png.BestSpeed}
 	if err := enc.Encode(&buf, src); err != nil {
@@ -300,11 +347,12 @@ func ExportPNG(img *image.NRGBA, scale int) ([]byte, error) {
 }
 
 // ExportCrispSVG stores equal colors in horizontal runs, including straight alpha.
-func ExportCrispSVG(img *image.NRGBA) string {
+func ExportCrispSVG(img *image.NRGBA) (string, error) {
 	if img == nil || img.Bounds().Empty() {
-		return ""
+		return "", fmt.Errorf("缺少可导出的像素画布")
 	}
 	var out strings.Builder
+	rects := 0
 	b := img.Bounds()
 	fmt.Fprintf(&out, "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"%d\" height=\"%d\" viewBox=\"0 0 %d %d\" shape-rendering=\"crispEdges\">\n", b.Dx(), b.Dy(), b.Dx(), b.Dy())
 	for y := b.Min.Y; y < b.Max.Y; y++ {
@@ -318,6 +366,10 @@ func ExportCrispSVG(img *image.NRGBA) string {
 			for end < b.Max.X && img.NRGBAAt(end, y) == c {
 				end++
 			}
+			rects++
+			if rects > maxCrispSVGRects {
+				return "", fmt.Errorf("当前图像色块过密（超过 25 万个矢量矩形），不适合导出 Crisp SVG，请使用 PNG 导出")
+			}
 			fill := FormatColor(c)
 			fmt.Fprintf(&out, "<rect x=\"%d\" y=\"%d\" width=\"%d\" height=\"1\" fill=\"%s\"", x-b.Min.X, y-b.Min.Y, end-x, fill[:7])
 			if c.A != 255 {
@@ -328,5 +380,5 @@ func ExportCrispSVG(img *image.NRGBA) string {
 		}
 	}
 	out.WriteString("</svg>\n")
-	return out.String()
+	return out.String(), nil
 }

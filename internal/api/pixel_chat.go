@@ -22,6 +22,7 @@ import (
 type pixelChatFields struct {
 	pixelVersion
 	Engine              string           `json:"engine"`
+	PixelMode           string           `json:"pixelMode"`
 	PixelDraftMode      string           `json:"pixelDraftMode"`
 	MainImage           *llm.ImageData   `json:"mainImage"`
 	RefImages           []pixelChatImage `json:"refImages"`
@@ -45,20 +46,26 @@ type pixelAgentBridge struct {
 	assets    map[string]pixelChatImage
 }
 
-func (b pixelAgentBridge) changed(layerID string, region *pixel.Rect) {
+func (b pixelAgentBridge) changed(targetID string, region *pixel.Rect) {
 	b.server.markPixelDirty(b.project)
 	if b.ctx.Err() != nil {
 		return
 	}
 	snap := b.server.snapshot()
 	data := map[string]any{"projectId": snap.ProjectID, "revision": snap.Revision, "project": snap}
-	if layerID != "" {
-		data["layerId"] = layerID
-		if region == nil {
-			if pngData, err := b.project.PixelLayerPNG(layerID); err == nil {
+	if targetID != "" {
+		readPNG, readImage := b.project.PixelLayerPNG, b.project.PixelLayer
+		idKey := "layerId"
+		if snap.Pixel.Anim != nil {
+			readPNG, readImage = b.project.PixelFramePNG, b.project.PixelFrameImage
+			idKey = "frameId"
+		}
+		data[idKey] = targetID
+		if region == nil || region.W*region.H*4 > 1<<20 {
+			if pngData, err := readPNG(targetID); err == nil {
 				data["pngBase64"] = base64.StdEncoding.EncodeToString(pngData)
 			}
-		} else if img, err := b.project.PixelLayer(layerID); err == nil {
+		} else if img, err := readImage(targetID); err == nil {
 			patch := make([]byte, region.W*region.H*4)
 			row := region.W * 4
 			for y := 0; y < region.H; y++ {
@@ -66,10 +73,8 @@ func (b pixelAgentBridge) changed(layerID string, region *pixel.Rect) {
 				copy(patch[y*row:(y+1)*row], img.Pix[offset:offset+row])
 			}
 			data["rgbaBase64"] = base64.StdEncoding.EncodeToString(patch)
+			data["region"] = *region
 		}
-	}
-	if region != nil {
-		data["region"] = *region
 	}
 	b.emit(agent.Event{Kind: agent.EvPixelUpdate, Pixel: data})
 }
@@ -81,6 +86,17 @@ func (b pixelAgentBridge) CanvasInfo() agent.PixelCanvasInfo {
 		ActiveLayer: doc.ActiveLayer, Selection: b.selection,
 		HasMainImage: b.assets["main"].ID != "", Layers: make([]agent.LayerInfo, 0, len(doc.Layers)),
 		RefIDs: make([]string, 0, len(b.assets)),
+		Mode:   doc.Pixel.Mode,
+	}
+	if out.Mode == "" {
+		out.Mode = project.PixelModeStatic
+	}
+	if anim := doc.Pixel.Anim; anim != nil {
+		out.FPS, out.Loop, out.ActiveFrame = anim.FPS, &anim.Loop, anim.ActiveFrameID
+		out.Frames = make([]agent.PixelFrameInfo, 0, len(anim.Frames))
+		for _, frame := range anim.Frames {
+			out.Frames = append(out.Frames, toPixelFrameInfo(frame))
+		}
 	}
 	for _, l := range doc.Layers {
 		layer := toLayerInfo(l)
@@ -94,6 +110,13 @@ func (b pixelAgentBridge) CanvasInfo() agent.PixelCanvasInfo {
 	}
 	slices.SortFunc(out.RefIDs, func(a, b string) int { return referenceNumber(a) - referenceNumber(b) })
 	return out
+}
+
+func toPixelFrameInfo(frame project.PixelFrame) agent.PixelFrameInfo {
+	return agent.PixelFrameInfo{
+		ID: frame.ID, Name: frame.Name, Index: frame.Index, Visible: frame.Visible, Locked: frame.Locked,
+		DelayMult: max(1, frame.DelayMult), Elements: frame.Elements, Region: frame.PixelRegion,
+	}
 }
 
 func referenceNumber(id string) int {
@@ -189,12 +212,38 @@ func (b pixelAgentBridge) DeleteLayer(id string) error {
 	return err
 }
 
+func (b pixelAgentBridge) FrameOperation(in agent.PixelFrameOperation) (agent.PixelFrameInfo, error) {
+	if err := b.ctx.Err(); err != nil {
+		return agent.PixelFrameInfo{}, err
+	}
+	if b.restrict {
+		return agent.PixelFrameInfo{}, errors.New("仅修改选区时不能操作整帧")
+	}
+	frame, err := b.project.PixelFrameOperation(project.PixelFrameOp{
+		Action: in.Action, FrameID: in.FrameID, SourceFrameID: in.SourceFrameID, Name: in.Name,
+		Index: in.Index, Visible: in.Visible, DelayMult: in.DelayMult, FrameIDs: in.FrameIDs,
+		DX: in.DX, DY: in.DY, Wrap: in.Wrap,
+	}, true)
+	if err == nil {
+		// Frame metadata includes changed filenames, so the browser can reload moved or duplicated frames.
+		b.changed("", nil)
+	}
+	return toPixelFrameInfo(frame), err
+}
+
 func (b pixelAgentBridge) Draw(id string, ops []pixel.DrawOp, clip *pixel.Selection) (pixel.DrawSummary, error) {
 	if err := b.ctx.Err(); err != nil {
 		return pixel.DrawSummary{}, err
 	}
 	if b.restrict || clip != nil {
 		clip = b.selection
+	}
+	if b.project.Meta().Pixel.Anim != nil {
+		frame, summary, err := b.project.PixelFrameDraw(id, ops, clip)
+		if err == nil && summary.ChangedPixels > 0 {
+			b.changed(frame.ID, &summary.Region)
+		}
+		return summary, err
 	}
 	layer, summary, err := b.project.PixelDraw(id, ops, clip)
 	if err == nil && summary.ChangedPixels > 0 {
@@ -206,7 +255,9 @@ func (b pixelAgentBridge) Draw(id string, ops []pixel.DrawOp, clip *pixel.Select
 func (b pixelAgentBridge) ReadRegion(id string, rect pixel.Rect) (pixel.RegionView, error) {
 	var img *image.NRGBA
 	var err error
-	if id == "composite" {
+	if b.project.Meta().Pixel.Anim != nil {
+		img, err = b.project.PixelFrameImage(id)
+	} else if id == "composite" {
 		img, err = b.project.PixelComposite()
 	} else {
 		img, err = b.project.PixelLayer(id)
@@ -221,9 +272,22 @@ func (b pixelAgentBridge) Inspect(opts pixel.InspectOpts) (string, pixel.Inspect
 	if err := b.ctx.Err(); err != nil {
 		return "", pixel.InspectStats{}, err
 	}
+	meta := b.project.Meta().Pixel
+	if opts.Mode == "onion" || opts.Mode == "filmstrip" {
+		if meta.Anim == nil {
+			return "", pixel.InspectStats{}, errors.New("洋葱皮和胶片检查仅支持像素动图")
+		}
+		data, stats, err := b.inspectAnimation(meta.Anim, opts)
+		return base64.StdEncoding.EncodeToString(data), stats, err
+	}
+	if len(opts.FrameIDs) != 0 || (meta.Anim == nil && opts.FrameID != "") || (meta.Anim != nil && opts.LayerID != "") {
+		return "", pixel.InspectStats{}, errors.New("请指定当前模式支持的检查目标")
+	}
 	var current, ref *image.NRGBA
 	var err error
-	if opts.Mode == "layer" || opts.Mode == "crop" && opts.LayerID != "" {
+	if meta.Anim != nil {
+		current, err = b.project.PixelFrameImage(opts.FrameID)
+	} else if opts.Mode == "layer" || opts.Mode == "crop" && opts.LayerID != "" {
 		current, err = b.project.PixelLayer(opts.LayerID)
 	} else {
 		current, err = b.project.PixelComposite()
@@ -241,7 +305,7 @@ func (b pixelAgentBridge) Inspect(opts pixel.InspectOpts) (string, pixel.Inspect
 		return "", pixel.InspectStats{}, err
 	}
 	if opts.Fit == "" {
-		opts.Fit = b.project.Meta().Pixel.Fit
+		opts.Fit = meta.Fit
 	}
 	data, stats, err := pixel.Inspect(current, ref, opts)
 	if err != nil {
@@ -250,12 +314,60 @@ func (b pixelAgentBridge) Inspect(opts pixel.InspectOpts) (string, pixel.Inspect
 	return base64.StdEncoding.EncodeToString(data), stats, nil
 }
 
-func (b pixelAgentBridge) CompositePNG() (string, error) {
+func (b pixelAgentBridge) inspectAnimation(anim *project.PixelAnimMeta, opts pixel.InspectOpts) ([]byte, pixel.InspectStats, error) {
+	if opts.Mode == "onion" {
+		id := opts.FrameID
+		if id == "" {
+			id = anim.ActiveFrameID
+		}
+		current, err := b.project.PixelFrameImage(id)
+		if err != nil {
+			return nil, pixel.InspectStats{}, err
+		}
+		var previous *image.NRGBA
+		for i := 1; i < len(anim.Frames); i++ {
+			if anim.Frames[i].ID == id {
+				previous, err = b.project.PixelFrameImage(anim.Frames[i-1].ID)
+				if err != nil {
+					return nil, pixel.InspectStats{}, err
+				}
+				break
+			}
+		}
+		return pixel.InspectOnion(current, previous)
+	}
+	const filmstripLimit = 8
+	if len(opts.FrameIDs) > filmstripLimit {
+		return nil, pixel.InspectStats{}, errors.New("每张胶片最多检查 8 帧")
+	}
+	var images []*image.NRGBA
+	var indices []int
+	for _, frame := range anim.Frames {
+		if len(opts.FrameIDs) > 0 && !slices.Contains(opts.FrameIDs, frame.ID) {
+			continue
+		}
+		img, err := b.project.PixelFrameImage(frame.ID)
+		if err != nil {
+			return nil, pixel.InspectStats{}, err
+		}
+		images = append(images, img)
+		indices = append(indices, frame.Index-1)
+		if len(images) == filmstripLimit {
+			break
+		}
+	}
+	if len(opts.FrameIDs) > 0 && len(images) != len(opts.FrameIDs) {
+		return nil, pixel.InspectStats{}, errors.New("指定的帧不存在或重复")
+	}
+	return pixel.InspectFilmstrip(images, indices)
+}
+
+func (b pixelAgentBridge) ModelCompositePNG() (string, error) {
 	img, err := b.project.PixelComposite()
 	if err != nil {
 		return "", err
 	}
-	return encodeModelImage(img)
+	return encodeModelImage(pixel.Preview(img, 1024))
 }
 
 func encodeModelImage(img *image.NRGBA) (string, error) {
@@ -271,6 +383,10 @@ func (s *Server) preparePixelChat(ctx context.Context, p *project.Project, field
 	prompt string, vision bool, emit func(agent.Event)) (*pixelAgentBridge, *agent.PixelInput, string, error) {
 	doc := p.Meta()
 	meta := doc.Pixel
+	if fields.PixelMode != "" && (fields.PixelMode != meta.Mode &&
+		!(meta.Mode == "" && fields.PixelMode == project.PixelModeStatic)) {
+		return nil, nil, prompt, errors.New("像素画模式已发生变化，请同步后重试")
+	}
 	mode := fields.PixelDraftMode
 	if mode == "" {
 		mode = meta.DraftMode
@@ -330,6 +446,9 @@ func (s *Server) preparePixelChat(ctx context.Context, p *project.Project, field
 		} else {
 			return nil, nil, prompt, errors.New("请输入绘画指令或添加图片")
 		}
+		if meta.Anim != nil {
+			prompt = "请参考当前帧与工程素材，制作循环像素动画。"
+		}
 	}
 	input := &agent.PixelInput{
 		DraftMode: mode, Selection: fields.Selection, RestrictToSelection: fields.RestrictToSelection,
@@ -370,15 +489,27 @@ func (s *Server) preparePixelChat(ctx context.Context, p *project.Project, field
 		input.MainImage = &llm.ImageData{MIME: "image/png", Data: data}
 	}
 	if vision {
+		hasPixels := false
 		for _, layer := range doc.Layers {
 			if layer.Elements > 0 {
-				data, err := b.CompositePNG()
-				if err != nil {
-					return nil, nil, prompt, err
-				}
-				input.Composite = &llm.ImageData{MIME: "image/png", Data: data}
+				hasPixels = true
 				break
 			}
+		}
+		if meta.Anim != nil {
+			for _, frame := range meta.Anim.Frames {
+				if frame.ID == meta.Anim.ActiveFrameID {
+					hasPixels = frame.Elements > 0
+					break
+				}
+			}
+		}
+		if hasPixels {
+			data, err := b.ModelCompositePNG()
+			if err != nil {
+				return nil, nil, prompt, err
+			}
+			input.Composite = &llm.ImageData{MIME: "image/png", Data: data}
 		}
 	}
 	return b, input, prompt, nil

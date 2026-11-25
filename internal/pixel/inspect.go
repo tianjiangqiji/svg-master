@@ -12,21 +12,31 @@ import (
 )
 
 type InspectOpts struct {
-	Mode     string `json:"mode,omitempty"`
-	LayerID  string `json:"layerId,omitempty"`
-	RefID    string `json:"refId,omitempty"`
-	Region   *Rect  `json:"region,omitempty"`
-	ShowGrid bool   `json:"showGrid,omitempty"`
-	Fit      string `json:"fit,omitempty"`
+	Mode     string   `json:"mode,omitempty"`
+	LayerID  string   `json:"layerId,omitempty"`
+	FrameID  string   `json:"frameId,omitempty"`
+	FrameIDs []string `json:"frameIds,omitempty"`
+	RefID    string   `json:"refId,omitempty"`
+	Region   *Rect    `json:"region,omitempty"`
+	ShowGrid bool     `json:"showGrid,omitempty"`
+	Fit      string   `json:"fit,omitempty"`
 }
 
 type InspectStats struct {
-	Region               Rect        `json:"region"`
-	NonTransparentPixels int         `json:"nonTransparentPixels"`
-	Coverage             float64     `json:"coverage"`
-	ColorCount           int         `json:"colorCount"`
-	DominantColors       []string    `json:"dominantColors,omitempty"`
-	Comparison           *Comparison `json:"comparison,omitempty"`
+	Region               Rect              `json:"region"`
+	NonTransparentPixels int               `json:"nonTransparentPixels"`
+	Coverage             float64           `json:"coverage"`
+	ColorCount           int               `json:"colorCount"`
+	DominantColors       []string          `json:"dominantColors,omitempty"`
+	Comparison           *Comparison       `json:"comparison,omitempty"`
+	Frames               []FrameInspection `json:"frames,omitempty"`
+}
+
+type FrameInspection struct {
+	Index                int     `json:"index"`
+	Region               Rect    `json:"region"`
+	NonTransparentPixels int     `json:"nonTransparentPixels"`
+	Coverage             float64 `json:"coverage"`
 }
 
 type Comparison struct {
@@ -113,6 +123,9 @@ type inspectPanel struct {
 }
 
 func Inspect(composite, reference *image.NRGBA, opts InspectOpts) ([]byte, InspectStats, error) {
+	if opts.Mode == "onion" {
+		return InspectOnion(composite, reference)
+	}
 	if composite == nil || composite.Bounds().Empty() {
 		return nil, InspectStats{}, fmt.Errorf("没有可检查的画布")
 	}
@@ -130,7 +143,6 @@ func Inspect(composite, reference *image.NRGBA, opts InspectOpts) ([]byte, Inspe
 	stat := summarize(composite, region)
 	panel := inspectPanel{img: composite, region: region, label: "CANVAS"}
 	var panels []inspectPanel
-	limit := 768
 	switch opts.Mode {
 	case "", "composite":
 		panels = []inspectPanel{panel}
@@ -152,16 +164,73 @@ func Inspect(composite, reference *image.NRGBA, opts InspectOpts) ([]byte, Inspe
 		heat, comparison := compareImages(composite, aligned, region)
 		stat.Comparison = &comparison
 		panels = []inspectPanel{{img: aligned, region: region, label: "REFERENCE"}, panel, {img: heat, region: region, label: "DIFFERENCE"}}
-		limit = 294
 	default:
 		return nil, InspectStats{}, fmt.Errorf("未知像素检查模式 %q", opts.Mode)
 	}
-	bitmap := renderPanels(panels, limit, opts.ShowGrid)
+	bitmap := renderPanels(panels, opts.ShowGrid)
 	png, err := ExportPNG(bitmap, 1)
 	if err != nil {
 		return nil, InspectStats{}, err
 	}
 	return png, stat, nil
+}
+
+// InspectOnion shows the previous frame behind the current one as a pale-blue alignment guide.
+func InspectOnion(current, previous *image.NRGBA) ([]byte, InspectStats, error) {
+	if current == nil || current.Bounds().Empty() {
+		return nil, InspectStats{}, fmt.Errorf("没有可检查的当前帧")
+	}
+	bounds := current.Bounds()
+	canvas := current
+	if previous != nil {
+		if previous.Bounds() != bounds {
+			return nil, InspectStats{}, fmt.Errorf("上一帧尺寸与当前帧不一致")
+		}
+		guide := image.NewNRGBA(bounds)
+		fill := color.NRGBA{R: 116, G: 165, B: 241}
+		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+			for x := bounds.Min.X; x < bounds.Max.X; x++ {
+				fill.A = previous.NRGBAAt(x, y).A
+				guide.SetNRGBA(x, y, fill)
+			}
+		}
+		canvas = image.NewNRGBA(bounds)
+		draw.DrawMask(canvas, bounds, guide, bounds.Min, image.NewUniform(color.Alpha{A: 89}), image.Point{}, draw.Over)
+		draw.Draw(canvas, bounds, current, bounds.Min, draw.Over)
+	}
+	panel := inspectPanel{img: canvas, region: bounds, label: "ONION"}
+	png, err := ExportPNG(renderPanels([]inspectPanel{panel}, true), 1)
+	return png, summarize(current, bounds), err
+}
+
+// InspectFilmstrip renders one to eight equal-sized frames in order with their zero-based frame numbers.
+func InspectFilmstrip(images []*image.NRGBA, indices []int) ([]byte, InspectStats, error) {
+	if len(images) < 1 || len(images) > 8 || (indices != nil && len(indices) != len(images)) {
+		return nil, InspectStats{}, fmt.Errorf("胶片检查需要 1 到 8 张帧图和对应帧号")
+	}
+	if images[0] == nil || images[0].Bounds().Empty() {
+		return nil, InspectStats{}, fmt.Errorf("胶片检查缺少有效的首帧")
+	}
+	bounds := images[0].Bounds()
+	stats := summarize(images[0], bounds)
+	panels := make([]inspectPanel, 0, len(images))
+	for i, img := range images {
+		if img == nil || img.Bounds() != bounds {
+			return nil, InspectStats{}, fmt.Errorf("胶片检查的帧图尺寸不一致")
+		}
+		index := i
+		if indices != nil {
+			index = indices[i]
+		}
+		if index < 0 {
+			return nil, InspectStats{}, fmt.Errorf("帧号必须为非负数")
+		}
+		count, region := Coverage(img)
+		stats.Frames = append(stats.Frames, FrameInspection{Index: index, Region: region, NonTransparentPixels: count, Coverage: float64(count) / float64(bounds.Dx()*bounds.Dy())})
+		panels = append(panels, inspectPanel{img: img, region: bounds, label: "#" + strconv.Itoa(index)})
+	}
+	png, err := ExportPNG(renderPanels(panels, false), 1)
+	return png, stats, err
 }
 
 func summarize(img *image.NRGBA, r image.Rectangle) InspectStats {
@@ -287,8 +356,14 @@ var (
 	frameGrid       = color.NRGBA{R: 124, G: 136, B: 159, A: 255}
 )
 
-func renderPanels(panels []inspectPanel, limit int, grid bool) *image.NRGBA {
-	const left, top, right, bottom, gap = 26, 33, 12, 10, 8
+const (
+	inspectMaxSide                                                   = 1024
+	inspectLeft, inspectTop, inspectRight, inspectBottom, inspectGap = 30, 33, 12, 10, 8
+)
+
+func renderPanels(panels []inspectPanel, grid bool) *image.NRGBA {
+	const left, top, right, bottom, gap = inspectLeft, inspectTop, inspectRight, inspectBottom, inspectGap
+	limit := min(inspectMaxSide-top-bottom, (inspectMaxSide-(len(panels)-1)*gap)/len(panels)-left-right)
 	w, h := plotSize(panels[0].region, limit)
 	position := left
 	width := len(panels)*(left+w+right) + (len(panels)-1)*gap
@@ -391,7 +466,7 @@ var glyphs = map[rune][7]uint8{
 	'0': {14, 17, 19, 21, 25, 17, 14}, '1': {4, 12, 4, 4, 4, 4, 14}, '2': {14, 17, 1, 2, 4, 8, 31},
 	'3': {30, 1, 1, 14, 1, 1, 30}, '4': {2, 6, 10, 18, 31, 2, 2}, '5': {31, 16, 16, 30, 1, 1, 30},
 	'6': {14, 16, 16, 30, 17, 17, 14}, '7': {31, 1, 2, 4, 8, 8, 8}, '8': {14, 17, 17, 14, 17, 17, 14},
-	'9': {14, 17, 17, 15, 1, 1, 14}, '-': {0, 0, 0, 31, 0, 0, 0}, 'A': {14, 17, 17, 31, 17, 17, 17},
+	'9': {14, 17, 17, 15, 1, 1, 14}, '-': {0, 0, 0, 31, 0, 0, 0}, '#': {10, 10, 31, 10, 31, 10, 10}, 'A': {14, 17, 17, 31, 17, 17, 17},
 	'C': {14, 17, 16, 16, 16, 17, 14}, 'D': {30, 17, 17, 17, 17, 17, 30}, 'E': {31, 16, 16, 30, 16, 16, 31},
 	'F': {31, 16, 16, 30, 16, 16, 16}, 'I': {14, 4, 4, 4, 4, 4, 14}, 'L': {16, 16, 16, 16, 16, 16, 31},
 	'N': {17, 25, 21, 19, 17, 17, 17}, 'O': {14, 17, 17, 17, 17, 17, 14}, 'P': {30, 17, 17, 30, 16, 16, 16},

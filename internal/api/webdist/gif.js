@@ -287,11 +287,13 @@
       buf.byte(col[0]); buf.byte(col[1]); buf.byte(col[2]);
     }
     // ---- 循环扩展 ----
-    buf.byte(0x21); buf.byte(0xff); buf.byte(0x0b);
-    buf.ascii('NETSCAPE2.0');
-    buf.byte(0x03); buf.byte(0x01);
-    buf.u16(this.loop);
-    buf.byte(0x00);
+    if (this.loop >= 0) {
+      buf.byte(0x21); buf.byte(0xff); buf.byte(0x0b);
+      buf.ascii('NETSCAPE2.0');
+      buf.byte(0x03); buf.byte(0x01);
+      buf.u16(this.loop);
+      buf.byte(0x00);
+    }
 
     var total = this.w * this.h;
     for (var fi = 0; fi < this.frames.length; fi++) {
