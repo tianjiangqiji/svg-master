@@ -1975,6 +1975,18 @@
     setPrompt($('prompt').value);
     if (S.genMode === 'pixel') {
       // 像素模式：开关仅影响下一轮生成的系统提示，不挂载 SVG 动画条。
+      // 开启时联动动画形态：无工程先静默建动画画板，静态工程自动切换（成功后底部时间轴即出现）。
+      if ($('gifEnabled').checked) {
+        (async () => {
+          try {
+            if (!pixel.hasEditableBoard) {
+              await projectAction('/api/project/open', { mode: 'quick', engine: 'pixel', fresh: false, pixelMode: 'anim' }, '');
+            } else if (!pixel.isAnimatedNow) {
+              await pixel.ensureAnimatedBoard();
+            }
+          } catch (error) { /* 联动失败不打断开关状态，生成仍按当前形态走 */ }
+        })();
+      }
       syncGenSwitch();
       persist();
       return;

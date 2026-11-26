@@ -1790,6 +1790,20 @@
     return {
       setProject, layout, onKey, paste, flush, requestWithRevision, mutate, quantize, checkDimensions,
       stopPlayback,
+      get isAnimatedNow() { return isAnimated(); },
+      get hasEditableBoard() { return hasBoard() && ownsEdits(); },
+      // GIF 开关联动：保证工程处于动画形态（无工程返回 false，由调用方决定建板）。
+      async ensureAnimatedBoard() {
+        if (!hasBoard()) return false;
+        if (isAnimated()) return true;
+        if (!ownsEdits() || project?.pixel?.modeLocked) return false;
+        if (Math.max(boardWidth, boardHeight) > maxAnimationSize) {
+          toast('画布宽或高超过 512 像素，无法开启动画时间轴，请先调整尺寸。', true);
+          return false;
+        }
+        await mutate('/api/pixel/frames', { action: 'modeSwitch', pixelMode: 'anim', flatten: entries().length > 1 }, 'POST', { reload: true });
+        return isAnimated();
+      },
       get layerLimit() {
         if (isAnimated()) return maxFrameCount;
         return Math.max(boardWidth, boardHeight) > 1024 ? 14 : 32;
