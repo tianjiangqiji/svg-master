@@ -360,7 +360,7 @@
     $('prompt').placeholder = isPixel()
       ? '描述要画什么，也可以指定主图构图或参考图 #1 的角色…' : '描述你要生成的 SVG…';
     $('quickNewTitle').textContent = isPixel() ? '临时画板' : '快速生成';
-    $('quickNewHint').textContent = isPixel() ? '无需选择文件夹' : '空画板直接开工';
+    $('quickNewHint').textContent = isPixel() ? '' : '空画板直接开工';
     showPane('paneGen');
     renderLayers();
     updateProjectBadge();
@@ -378,7 +378,8 @@
     try {
       if (isPixel() && hasWorkspaceProject()) await pixel.flush();
       showWorkspace(engine);
-      if (!hasWorkspaceProject() || !$('modalProject').classList.contains('hidden')) {
+      // SVG 工作区首次进入仍需选择打开方式；像素画板无需工程文件，直接可用。
+      if (engine !== 'pixel' && (!hasWorkspaceProject() || !$('modalProject').classList.contains('hidden'))) {
         openProjectModal({ boot: bootPickOpen });
       }
       return true;
@@ -1922,12 +1923,6 @@
   // 当前工程里是否有可延续的历史
   function hasSession() { return !!(hasWorkspaceProject() && S.session); }
 
-  const HINTS = {
-    multiOn: '<b>多步修改</b>：模型可分层创建、读取、编辑，逐步细化。',
-    multiOff: '<b>单步生成</b>：模型一次交付整幅 SVG（无图层工具）。',
-    noProj: '<b>尚未打开工程</b>：点击顶部「工程」选择模式。',
-  };
-
   // ── 创作模式：快速 / 多图层 / 像素 ──────────────────────
   const GIF_MARKER = '\n\n[GIF 动图 · 固定提示]';
   const GIF_SUFFIX = GIF_MARKER + '\n请输出可播放的动图：在根 SVG 下使用 <g data-frame="0">、<g data-frame="1"> 等完整帧分组，保持各帧画布与主体位置一致。';
@@ -2050,9 +2045,7 @@
       const frozen = !genSwitchAllowed();
       wrap.classList.toggle('locked', frozen);
       wrap.classList.remove('sealed');
-      wrap.title = frozen
-        ? genBlockReason()
-        : '拖动或点击切换：快速模式一次成图；多图层模式分步按图层改造；像素模式打开像素画板';
+      wrap.title = frozen ? genBlockReason() : '拖动或点击切换';
     }
     $('gifOption').classList.toggle('hidden', S.genMode !== 'quick' && S.genMode !== 'pixel');
     $('gifEnabled').checked = !!S.settings?.agent?.gif;
@@ -2065,11 +2058,9 @@
     if (!hint) return;
     let text = '';
     if (S.genLocked) text = genBlockReason();
-    else if (S.genMode === 'layers') text = '模型分多步、按图层改造画面。';
-    else if (S.genMode === 'pixel') text = '使用像素画板、图层与底部动画时间轴。';
-    else text = '模型一次性交付整幅 SVG，可附加 GIF 动图要求。';
     hint.textContent = text;
     hint.classList.toggle('warn', S.genLocked);
+    hint.classList.toggle('hidden', !text);
   }
 
   async function setGenMode(target, opts) {
@@ -2233,6 +2224,8 @@
     const gif = $('btnGif');
     if (gif) gif.classList.toggle('hidden', !on);
     updateSaveTitle();
+    // 时间轴显隐与开关同步，关闭时也要走一次渲染清空轨道。
+    renderGifTimeline();
     if (!on) { animStop(); return; }
     animAnalyze();
     const a = S.anim;
@@ -2252,6 +2245,7 @@
       gif.textContent = a.busy ? '导出中…' : '导出 GIF';
       gif.title = S.svg ? '把当前动图导出为 GIF' : '还没有可导出的画面';
     }
+    renderGifTimeline();
   }
 
   function animPlay() {
@@ -2299,6 +2293,156 @@
     if (root) animShowAll(root);
   }
 
+  // ── GIF 帧时间轴：勾选 GIF 后出现，可手动二次编辑 ──────
+  //
+  // 时间轴读取画布上按 data-frame 分组的帧：每帧一张缩略卡片，支持
+  // 删除 / 复制 / 重绘；生成前把当前帧数注入提示词，模型能读到时间轴
+  // 的完整状态；「重绘」以该帧为焦点发起一轮编辑。
+  function gifFrameSVG(root, keep) {
+    const doc = root.ownerDocument;
+    const clone = doc.importNode(root, true);
+    const groups = Array.from(clone.querySelectorAll('[data-frame]')).sort((a, b) => {
+      const x = parseFloat(a.getAttribute('data-frame')) || 0;
+      const y = parseFloat(b.getAttribute('data-frame')) || 0;
+      return x - y;
+    });
+    groups.forEach((g, i) => {
+      g.style.setProperty('display', g === keep ? 'inline' : 'none', 'important');
+      g.style.setProperty('opacity', '1', 'important');
+      g.style.setProperty('visibility', 'visible', 'important');
+      if (g === keep) g.setAttribute('data-frame', String(i));
+    });
+    const size = root.getAttribute('viewBox') || '0 0 512 512';
+    return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + size.replace(/^[^\s]+/, '0 0') + '">' + clone.innerHTML + '</svg>';
+  }
+
+  function gifFrameThumb(root, group) {
+    try {
+      const text = gifFrameSVG(root, group);
+      return 'data:image/svg+xml,' + encodeURIComponent(text);
+    } catch (e) { return ''; }
+  }
+
+  function gifApplySVG(text) {
+    // 时间轴编辑直接改 DOM 后回填画布，走同一套 setSVG 通道。
+    setSVG(text, 'silent');
+  }
+
+  function gifRenumber(root) {
+    animGroups(root).forEach((g, i) => g.setAttribute('data-frame', String(i)));
+  }
+
+  function gifSerialize() {
+    const root = animRoot();
+    if (!root) return '';
+    return new XMLSerializer().serializeToString(root);
+  }
+
+  function renderGifTimeline() {
+    const bar = $('gifTimeline');
+    const track = $('gifTimelineTrack');
+    if (!bar || !track) return;
+    const on = S.genMode === 'quick' && gifActive();
+    bar.classList.toggle('hidden', !on);
+    if (!on) { track.innerHTML = ''; return; }
+    const root = animRoot();
+    const groups = animGroups(root);
+    if (!root || groups.length < 1) {
+      track.innerHTML = '<div class="gif-timeline-empty">帧将在生成后出现在这里，可逐帧删除、复制或重绘</div>';
+      return;
+    }
+    track.innerHTML = '';
+    groups.forEach((g, i) => {
+      const card = document.createElement('div');
+      card.className = 'gif-frame' + (i === S.anim.index ? ' active' : '');
+      card.dataset.frameIndex = String(i);
+      card.tabIndex = 0;
+      card.setAttribute('role', 'button');
+      card.title = '第 ' + (i + 1) + ' 帧 · 点击预览';
+      const img = document.createElement('img');
+      img.className = 'gif-frame-thumb';
+      img.alt = '第 ' + (i + 1) + ' 帧';
+      img.src = gifFrameThumb(root, g);
+      const label = document.createElement('span');
+      label.className = 'gif-frame-index';
+      label.textContent = String(i + 1);
+      const ops = document.createElement('span');
+      ops.className = 'gif-frame-ops';
+      const mkOp = (labelText, cls, title) => {
+        const b = document.createElement('button');
+        b.type = 'button'; b.textContent = labelText; b.className = cls; b.title = title;
+        return b;
+      };
+      ops.append(mkOp('✕', 'del', '删除此帧'), mkOp('⧉', 'copy', '复制此帧到末尾'), mkOp('↻', 'redraw', '以此帧为焦点重绘'));
+      card.append(img, label, ops);
+      track.appendChild(card);
+    });
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.className = 'gif-frame-add';
+    add.title = '复制最后一帧追加到时间轴';
+    add.textContent = '+';
+    add.addEventListener('click', () => {
+      const list = animGroups(animRoot());
+      if (list.length < 1) return;
+      const last = list[list.length - 1];
+      const copy = last.cloneNode(true);
+      copy.setAttribute('data-frame', String(list.length));
+      last.parentNode.insertBefore(copy, last.nextSibling);
+      gifApplySVG(gifSerialize());
+    });
+    track.appendChild(add);
+  }
+
+  $('gifTimelineTrack').addEventListener('click', (event) => {
+    const opBtn = event.target.closest('button.del, button.copy, button.redraw');
+    const card = event.target.closest('.gif-frame');
+    if (!card) return;
+    const root = animRoot();
+    const groups = animGroups(root);
+    const idx = parseInt(card.dataset.frameIndex, 10);
+    if (!Number.isFinite(idx) || idx < 0 || idx >= groups.length) return;
+    if (opBtn) {
+      if (opBtn.classList.contains('del')) {
+        if (groups.length <= 1) { toast('至少保留一帧', true); return; }
+        groups[idx].remove();
+        gifRenumber(root);
+        S.anim.index = clamp(idx > 0 ? idx - 1 : 0, 0, groups.length - 2);
+        gifApplySVG(gifSerialize());
+        return;
+      }
+      if (opBtn.classList.contains('copy')) {
+        const copy = groups[idx].cloneNode(true);
+        copy.setAttribute('data-frame', String(groups.length));
+        groups[groups.length - 1].parentNode.insertBefore(copy, groups[groups.length - 1].nextSibling);
+        gifApplySVG(gifSerialize());
+        return;
+      }
+      if (opBtn.classList.contains('redraw')) {
+        if (S.running) { toast('正在生成中，请等待完成', true); return; }
+        const focus = (idx + 1) + '/' + groups.length;
+        setPrompt('重绘第 ' + focus + ' 帧：保持其它帧不变，仅重画这一帧的画面内容。');
+        syncGenSwitch();
+        startRun();
+        return;
+      }
+    }
+    // 点击卡片本体：预览该帧
+    S.anim.index = idx;
+    if (S.anim.source === 'frames') {
+      animStop();
+      animShowFrame(root, idx);
+    }
+    syncAnimBar();
+  });
+  $('gifTimelineTrack').addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    const card = event.target.closest('.gif-frame');
+    if (!card) return;
+    event.preventDefault();
+    card.click();
+  });
+
   // animOnSVG 画布换了新图时调用：重新判定来源，GIF 开启时自动接着播。
   function animOnSVG() {
     if (!gifActive()) return;
@@ -2310,6 +2454,7 @@
     const root = animRoot();
     if (root && a.source === 'frames') animShowFrame(root, 0);
     if (a.source === 'frames' || a.source === 'smil') animPlay();
+    renderGifTimeline();
   }
 
   // ── GIF 导出 ────────────────────────────────────────────
@@ -3160,7 +3305,11 @@
     const pendingSeq = S.runSeq;
     if (!S.settings) { toast('设置尚未加载', true); return; }
     syncInputsToSettings();
-    const prompt = $('prompt').value.trim();
+    let prompt = $('prompt').value.trim();
+    // GIF 开启时把时间轴状态告知模型：帧数、帧率与当前编辑到的位置。
+    if (!pixelRun && gifActive() && S.anim.source === 'frames' && S.anim.frames > 1) {
+      prompt += `\n\n[时间轴状态] 当前画布按帧分组交付，共 ${S.anim.frames} 帧，帧率 ${S.anim.fps}fps；如需增删改帧请按 data-frame 顺序输出完整分组。`;
+    }
     const pixelMode = pixelRun ? $('pixelDraft').value : '';
     const implicitPrompt = pixelRun && (pixelMode === 'vision' ? pixel.hasAssets : pixelMode === 'quantize' && pixel.canDraft);
     if (!prompt && !implicitPrompt) { $('prompt').focus(); toast('请先填写提示词', true); return; }
@@ -3171,9 +3320,15 @@
     if (!p.apiKey && p.authMode !== 'chatgpt') { toast('该供应商还没有填写 API Key', true); return; }
     if (!pixelRun && !S.canvas) { toast('请选择比例预设', true); return; }
     if (!hasWorkspaceProject()) {
-      toast(pixelRun ? '请先打开像素工程' : '请先选择打开方式（快速生成 / 新建项目 / 打开项目）', true);
-      openProjectModal();
-      return;
+      if (pixelRun) {
+        // 像素画板无需预建工程文件：首次生成时静默创建临时画板。
+        const ok = await projectAction('/api/project/open', { mode: 'quick', engine: 'pixel', fresh: false }, '');
+        if (!ok) return;
+      } else {
+        toast('请先选择打开方式（快速生成 / 新建项目 / 打开项目）', true);
+        openProjectModal();
+        return;
+      }
     }
     if (pixelRun) {
       pixel.stopPlayback();
@@ -3235,7 +3390,6 @@
     addLog('LOG', `开始生成 · ${p.name} / ${model} · ${sizeLabel}`);
     if (S.settings.fastMode && fastModeAvailable()) {
       $('fastModeStatus').textContent = '已请求 Fast，等待服务端确认…';
-      addLog('LOG', '已请求 Fast 加速；可能增加额度或费用消耗');
     }
     if (!pixelRun && S.images.length) addLog('LOG', `附带 ${S.images.length} 张图片`);
 
@@ -3748,8 +3902,7 @@
     const b = $('btnSave');
     if (!b) return;
     if (gifActive()) {
-      // GIF 开关开启：保存 SVG 源码，导出动图使用旁边按钮。
-      b.title = '导出 SVG 源码文件（动图模式保存代码，导出 GIF 用左侧按钮）';
+      b.title = '导出 SVG 源码文件';
       b.textContent = '保存代码';
       return;
     }
@@ -4344,6 +4497,8 @@
   }, 120));
 
   // ── 收尾 ────────────────────────────────────────────────
+  // 诊断钩子：自动化验证与问题定位用，不参与任何 UI 流程。
+  window.__SM__ = { setSVG, getState: () => ({ genMode: S.genMode, genLocked: S.genLocked, anim: { ...S.anim } }), renderGifTimeline };
   updateBadge();
   boot();
 })();

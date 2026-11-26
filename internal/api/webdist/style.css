@@ -532,6 +532,22 @@ input[type=checkbox]{accent-color:var(--accent);width:13px;height:13px;margin:0;
 .gen-switch.locked .gen-opt{cursor:not-allowed}
 .gen-switch.locked .gen-opt:not(.allowed){opacity:.45}
 .gen-switch.locked .gen-track{cursor:not-allowed}
+.gif-timeline{flex:0 0 auto;padding:6px 8px;background:var(--panel);border-top:1px solid var(--border)}
+.gif-timeline-track{display:flex;align-items:stretch;gap:5px;min-height:76px;overflow-x:auto;overflow-y:hidden;padding-bottom:2px}
+.gif-timeline-empty{font-size:11px;color:var(--muted);padding:10px 2px}
+.gif-frame{position:relative;display:grid;grid-template-rows:44px 14px;justify-items:center;align-items:center;gap:3px;min-width:56px;padding:4px 5px 5px;background:var(--field);border:1px solid var(--border);border-radius:6px;color:var(--text2);cursor:pointer}
+.gif-frame:hover{border-color:var(--border2);background:var(--field-hover);color:var(--text)}
+.gif-frame.active{border-color:var(--accent);background:var(--accent-soft);color:var(--text)}
+.gif-frame:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.gif-frame-thumb{display:block;width:44px;height:40px;background:var(--bg);border-radius:3px}
+.gif-frame-index{font-size:10px;line-height:1;color:var(--text2)}
+.gif-frame-ops{position:absolute;top:2px;right:2px;display:none;gap:2px}
+.gif-frame:hover .gif-frame-ops,.gif-frame.active .gif-frame-ops{display:flex}
+.gif-frame-ops button{min-width:16px;height:16px;padding:0 2px;font-size:10px;line-height:1;background:var(--panel);border:1px solid var(--border);border-radius:3px;color:var(--text2);cursor:pointer}
+.gif-frame-ops button:hover{color:var(--text);border-color:var(--border2);background:var(--field-hover)}
+.gif-frame-ops button.del:hover{color:var(--danger, #e5484d)}
+.gif-frame-add{display:grid;place-items:center;min-width:44px;min-height:70px;padding:4px;font-size:18px;background:var(--field);border:1px dashed var(--border2);border-radius:6px;color:var(--text2);cursor:pointer}
+.gif-frame-add:hover{color:var(--text);background:var(--field-hover)}
 .gen-hint{font-size:11px;color:var(--muted);line-height:1.5;min-height:0}
 .gen-hint:empty{display:none}
 .gen-hint.warn{color:var(--warn)}

@@ -91,7 +91,6 @@
                 <span class="switch-track" aria-hidden="true"><span></span></span>
                 <span>GIF 动图</span>
               </label>
-              <span class="muted tiny">快速模式在提示词末尾加入动图要求，像素模式由 AI 按动图工作流绘制</span>
             </div>
             <div class="gen-hint" id="genHint"></div>
           </div>
@@ -113,7 +112,6 @@
         </div>
         <div class="fld hidden" id="fastModeField">
           <label class="chk"><input type="checkbox" id="fastMode" aria-describedby="fastModeHint" /><span>Fast 加速</span></label>
-          <small class="muted" id="fastModeHint">加快同一模型的输出，可能增加订阅额度或 API 费用消耗。是否生效以本轮结果为准。</small>
           <small id="fastModeStatus" role="status" aria-live="polite"></small>
         </div>
         <div class="fld" data-svg-only><span>图片输入（可选）</span>
@@ -324,6 +322,10 @@
             <input type="number" id="animFps" min="1" max="30" step="1" value="8" />
           </label>
           <span class="anim-pos mono" id="animPos">—</span>
+        </div>
+
+        <div class="gif-timeline hidden" id="gifTimeline" role="group" aria-label="GIF 帧时间轴">
+          <div class="gif-timeline-track" id="gifTimelineTrack"></div>
         </div>
 
         <div class="canvas-scroll" id="canvasScroll">
