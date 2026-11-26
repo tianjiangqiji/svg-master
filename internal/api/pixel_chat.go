@@ -24,6 +24,7 @@ type pixelChatFields struct {
 	Engine              string           `json:"engine"`
 	PixelMode           string           `json:"pixelMode"`
 	PixelDraftMode      string           `json:"pixelDraftMode"`
+	PixelGif            bool             `json:"pixelGif"`
 	MainImage           *llm.ImageData   `json:"mainImage"`
 	RefImages           []pixelChatImage `json:"refImages"`
 	Selection           *pixel.Selection `json:"selection"`
@@ -451,7 +452,7 @@ func (s *Server) preparePixelChat(ctx context.Context, p *project.Project, field
 		}
 	}
 	input := &agent.PixelInput{
-		DraftMode: mode, Selection: fields.Selection, RestrictToSelection: fields.RestrictToSelection,
+		DraftMode: mode, GIF: fields.PixelGif, Selection: fields.Selection, RestrictToSelection: fields.RestrictToSelection,
 	}
 	if len(meta.HumanEdits) > 0 {
 		raw, err := json.Marshal(meta.HumanEdits)

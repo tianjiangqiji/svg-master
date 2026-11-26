@@ -474,6 +474,8 @@
       initSels();
       renderCanvasSelect();
       applySettingsToLeft();
+      // 上次退出时处于像素模式 → 启动即恢复像素工作区（工程弹窗随后照常弹出）。
+      if (S.genMode === 'pixel' && workspace !== 'pixel' && pixel) showWorkspace('pixel');
       renderPromptCats();
       renderPromptGrid();
       renderFlow();
@@ -1930,6 +1932,8 @@
   const GIF_MARKER = '\n\n[GIF 动图 · 固定提示]';
   const GIF_SUFFIX = GIF_MARKER + '\n请输出可播放的动图：在根 SVG 下使用 <g data-frame="0">、<g data-frame="1"> 等完整帧分组，保持各帧画布与主体位置一致。';
   function gifActive() {
+    // gifActive 只描述快速模式的提示词后缀注入；像素模式的 GIF 走像素动图系统提示，
+    // 开关状态共用 agent.gif，显隐与持久化单独判断（见 syncGenSwitch / gifEnabled change）。
     return S.genMode === 'quick' && !!S.settings?.agent?.gif;
   }
   function stripGifPrompt(value) {
@@ -1974,6 +1978,12 @@
     S.settings.agent = S.settings.agent || {};
     S.settings.agent.gif = $('gifEnabled').checked;
     setPrompt($('prompt').value);
+    if (S.genMode === 'pixel') {
+      // 像素模式：开关仅影响下一轮生成的系统提示，不挂载 SVG 动画条。
+      syncGenSwitch();
+      persist();
+      return;
+    }
     if (gifActive()) animMount();
     else animUnmount();
     syncGenSwitch();
@@ -2044,7 +2054,7 @@
         ? genBlockReason()
         : '拖动或点击切换：快速模式一次成图；多图层模式分步按图层改造；像素模式打开像素画板';
     }
-    $('gifOption').classList.toggle('hidden', S.genMode !== 'quick');
+    $('gifOption').classList.toggle('hidden', S.genMode !== 'quick' && S.genMode !== 'pixel');
     $('gifEnabled').checked = !!S.settings?.agent?.gif;
     renderGenHint();
     syncAnimBar();

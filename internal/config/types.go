@@ -109,7 +109,8 @@ func NormalizeGenMode(a AgentSettings) AgentSettings {
 	}
 	a.GenMode = mode
 	a.MultiStep = mode == GenModeLayers
-	if mode != GenModeQuick {
+	// GIF 在快速模式注入动图提示词后缀，在像素模式注入动图系统提示；仅多图层不支持。
+	if mode != GenModeQuick && mode != GenModePixel {
 		a.GIF = false
 	}
 	return a
@@ -240,7 +241,7 @@ type AgentSettings struct {
 	// GenMode 生成方式，左栏三级开关的唯一真源：quick / layers / pixel。
 	// 由它派生 MultiStep 与图层工具下发；见 GenMode* 常量。
 	GenMode string `json:"genMode"`
-	// GIF 仅在 quick 模式下有意义；其他模式归一时清零。
+	// GIF 在 quick 模式注入动图提示词后缀，在 pixel 模式注入动图系统提示；layers 归一时清零。
 	GIF bool `json:"gif"`
 	// MultiStep 是 GenMode 的派生值（layers 时为 true），保留给旧配置与旧代码读取。
 	// 写入时由 NormalizeGenMode 统一回填，不要单独设置它。

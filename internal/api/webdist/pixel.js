@@ -1797,7 +1797,9 @@
       requestFields() {
         const areaSelection = selectPayload();
         return requestWithRevision({
-          engine: 'pixel', pixelMode: isAnimated() ? 'anim' : 'static', pixelDraftMode: $('pixelDraft').value, selection: areaSelection,
+          engine: 'pixel', pixelMode: isAnimated() ? 'anim' : 'static', pixelDraftMode: $('pixelDraft').value,
+          pixelGif: Boolean(document.getElementById('gifEnabled')?.checked),
+          selection: areaSelection,
           restrictToSelection: Boolean(areaSelection && $('pixelRestrict').checked),
         });
       },

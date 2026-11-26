@@ -269,6 +269,13 @@ func (e *Engine) run(ctx context.Context, t Task) (Stats, error) {
 		if info.Mode == pixelAnimMode {
 			system = pixelAnimSystemPrompt(e.deps.Vision)
 		}
+		if pixelInput.GIF {
+			if info.Mode == pixelAnimMode {
+				system += pixelGifAnimPrompt()
+			} else {
+				system += pixelGifStaticPrompt()
+			}
+		}
 		if extra := strings.TrimSpace(t.System); extra != "" {
 			system += "\n\n" + extra
 		}

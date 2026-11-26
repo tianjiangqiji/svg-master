@@ -32,7 +32,7 @@ func TestNormalizeGenModeV5(t *testing.T) {
 		{"旧 anim", AgentSettings{GenMode: GenModeAnim, MultiStep: true}, GenModeQuick, true, false},
 		{"quick 保留 GIF", AgentSettings{GenMode: GenModeQuick, GIF: true, MultiStep: true}, GenModeQuick, true, false},
 		{"layers 清除 GIF", AgentSettings{GenMode: GenModeLayers, GIF: true}, GenModeLayers, false, true},
-		{"pixel 清除 GIF", AgentSettings{GenMode: GenModePixel, GIF: true, MultiStep: true}, GenModePixel, false, false},
+		{"pixel 保留 GIF", AgentSettings{GenMode: GenModePixel, GIF: true, MultiStep: true}, GenModePixel, true, false},
 		{"非法值回落 layers", AgentSettings{GenMode: "unknown", GIF: true}, GenModeLayers, false, true},
 		{"空值按 MultiStep 推断 layers", AgentSettings{MultiStep: true, GIF: true}, GenModeLayers, false, true},
 		{"空值按 MultiStep 推断 quick", AgentSettings{GIF: true}, GenModeQuick, true, false},
@@ -67,7 +67,12 @@ func TestMigrateTo5(t *testing.T) {
 		{
 			name: "v4 pixel 工作区",
 			in:   Settings{Version: 4, Workspace: "pixel", Agent: AgentSettings{GenMode: GenModeLayers, GIF: true, MultiStep: true}},
-			mode: GenModePixel,
+			mode: GenModePixel, gif: true,
+		},
+		{
+			name: "v5 pixel 保留 GIF",
+			in:   Settings{Version: 5, Workspace: "pixel", Agent: AgentSettings{GenMode: GenModePixel, GIF: true}},
+			mode: GenModePixel, gif: true,
 		},
 		{
 			name: "v4 quick",
@@ -135,6 +140,7 @@ func TestStoreLoadsV4AsV5(t *testing.T) {
 	}{
 		{"anim", "svg", GenModeAnim, false, true, GenModeQuick, true, false},
 		{"pixel workspace", "pixel", GenModeLayers, true, true, GenModePixel, false, false},
+		{"pixel gif", "pixel", GenModePixel, true, false, GenModePixel, true, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

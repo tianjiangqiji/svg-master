@@ -65,6 +65,7 @@ type PixelFrameOperation struct {
 
 type PixelInput struct {
 	DraftMode           string
+	GIF                 bool
 	MainImage           *llm.ImageData
 	RefImages           []PixelReference
 	HumanEdits          string
