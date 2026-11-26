@@ -140,6 +140,8 @@
     let remoteError = '';
     let turnBefore = '';
     const previewVisibility = new Map();
+    const timelineCards = new Map();
+    let timelineShown = '';
     const stage = $('pixelStage');
     const viewport = $('pixelViewport');
     const sheet = $('pixelSheet');
@@ -210,10 +212,19 @@
       $('pixelExportGIF').classList.toggle('hidden', !animated);
       $('pixelExportGIF').disabled = !editable || !visibleFrames().length;
       $('pixelExportGIF').textContent = exportingGIF ? '正在编码…' : '导出 GIF';
-      $('pixelAnimBar').classList.toggle('hidden', !animated);
+      const timeline = $('pixelTimeline');
+      if (timeline) {
+        timeline.classList.toggle('hidden', !animated);
+        $('pixelAnimBar')?.classList.add('hidden');
+      } else $('pixelAnimBar')?.classList.toggle('hidden', !animated);
       $('pixelAnimPlay').disabled = !animated || running || busy || loading || !visibleFrames().length;
       $('pixelAnimFPS').disabled = $('pixelAnimLoop').disabled = !editable;
       $('pixelAnimOnion').disabled = !animated || playing || running;
+      const delayInput = $('pixelFrameDelay');
+      if (delayInput) {
+        delayInput.disabled = !editable || !animated || !activeID;
+        if (document.activeElement !== delayInput) delayInput.value = layerMetadata()?.delayMult || 1;
+      }
       const play = $('pixelAnimPlay');
       play.textContent = playing ? '❚❚' : '▶';
       play.setAttribute('aria-label', playing ? '暂停' : '播放');
@@ -226,11 +237,13 @@
           : Math.max(width, height) > 8192 || width * height > 64 * 1024 * 1024;
       }
       if ($('pixelExportScale').selectedOptions[0]?.disabled) $('pixelExportScale').value = '1×';
+      renderTimeline();
       if (animated) {
         const shown = playbackID || activeID;
         const order = playing ? visibleFrames() : [...entries()].sort((a, b) => a.index - b.index);
         const index = order.findIndex((frame) => frame.id === shown);
         $('pixelAnimPosition').textContent = (index + 1) + ' / ' + order.length;
+        updateTimelineButtons(editable);
       }
       $('pixelSelectionInfo').textContent = selection
         ? `选区 ${selection.x},${selection.y} · ${selection.w}×${selection.h}` : '';
@@ -257,6 +270,139 @@
 
     function visibleFrames() {
       return (animation()?.frames || []).filter((frame) => visibleForPreview(frame)).sort((a, b) => a.index - b.index);
+    }
+
+    function orderedFrames() {
+      return [...entries()].sort((a, b) => a.index - b.index);
+    }
+
+    function selectFrame(frameId) {
+      if (!frameId || frameId === activeID) return;
+      mutate('/api/pixel/frames', { action: 'active', frameId });
+    }
+
+    function stepFrame(delta) {
+      const order = orderedFrames();
+      if (!order.length) return;
+      const index = order.findIndex((frame) => frame.id === (playbackID || activeID));
+      const next = order[clamp(index + delta, 0, order.length - 1)];
+      if (next) selectFrame(next.id);
+    }
+
+    function moveFrame(delta) {
+      if (!ownsEdits()) return;
+      const frame = layerMetadata();
+      if (!frame) return;
+      const order = orderedFrames();
+      const index = order.findIndex((item) => item.id === frame.id);
+      const target = index + delta;
+      if (index < 0 || target < 0 || target >= order.length) return;
+      mutate('/api/pixel/frames', { action: 'reorder', frameId: frame.id, index: target + 1 });
+    }
+
+    function drawTimelineThumb(card, raster) {
+      const scale = 40 / Math.max(boardWidth, boardHeight, 1);
+      const w = Math.max(1, Math.round(boardWidth * scale));
+      const h = Math.max(1, Math.round(boardHeight * scale));
+      const thumb = card.thumb;
+      if (thumb.width !== w || thumb.height !== h) { thumb.width = w; thumb.height = h; }
+      thumb.style.width = w + 'px';
+      thumb.style.height = h + 'px';
+      const context = thumb.getContext('2d');
+      context.clearRect(0, 0, w, h);
+      context.imageSmoothingEnabled = false;
+      const source = raster && !raster.failed ? rasterImage(raster) : null;
+      if (source) context.drawImage(source, 0, 0, w, h);
+    }
+
+    function renderTimeline() {
+      const list = $('pixelTimelineFrames');
+      if (!list) return;
+      if (!isAnimated()) {
+        timelineCards.clear();
+        timelineShown = '';
+        list.replaceChildren();
+        return;
+      }
+      const frames = orderedFrames();
+      const alive = new Set(frames.map((frame) => frame.id));
+      for (const [id, card] of timelineCards) {
+        if (!alive.has(id)) { card.button.remove(); timelineCards.delete(id); }
+      }
+      const boardKey = boardWidth + '×' + boardHeight;
+      frames.forEach((frame, position) => {
+        let card = timelineCards.get(frame.id);
+        if (!card) {
+          const id = frame.id;
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'pixel-timeline-frame';
+          button.dataset.frameId = id;
+          const indexLabel = document.createElement('span');
+          indexLabel.className = 'pixel-timeline-index';
+          const thumb = document.createElement('canvas');
+          thumb.className = 'pixel-timeline-thumb';
+          thumb.style.imageRendering = 'pixelated';
+          const delayLabel = document.createElement('span');
+          delayLabel.className = 'pixel-timeline-delay';
+          const stateLabel = document.createElement('span');
+          stateLabel.className = 'pixel-timeline-state';
+          button.append(indexLabel, thumb, delayLabel, stateLabel);
+          button.addEventListener('click', () => selectFrame(id));
+          card = { button, indexLabel, thumb, delayLabel, stateLabel, key: '', raster: null, rasterVersion: -1, boardKey: '' };
+          timelineCards.set(id, card);
+        }
+        const visible = visibleForPreview(frame);
+        const key = [position + 1, visible ? 1 : 0, frame.delayMult || 1, frame.name || '', frame.locked ? 1 : 0].join('|');
+        if (card.key !== key) {
+          card.key = key;
+          card.indexLabel.textContent = String(position + 1);
+          card.delayLabel.textContent = '×' + (frame.delayMult || 1);
+          card.button.classList.toggle('is-hidden', !visible);
+          card.button.title = '帧 ' + (position + 1) + (frame.name ? ' · ' + frame.name : '')
+            + ' · 时长 ×' + (frame.delayMult || 1) + (visible ? '' : ' · 已隐藏') + (frame.locked ? ' · 已锁定' : '');
+          card.button.setAttribute('aria-label', card.button.title);
+        }
+        const isActive = frame.id === activeID;
+        const isPlaying = playing && frame.id === playbackID;
+        card.button.classList.toggle('active', isActive);
+        card.button.classList.toggle('playing', isPlaying);
+        card.button.setAttribute('aria-pressed', String(isActive));
+        const state = (isActive ? '当前' : '') + (isPlaying ? (isActive ? ' · 播放' : '播放') : '') + (!visible ? ((isActive || isPlaying) ? ' · 隐藏' : '隐藏') : '');
+        if (card.stateLabel.textContent !== state) card.stateLabel.textContent = state;
+        // 缩略图复用 raster 缓存：仅当缓存版本变化、画布尺寸变化或当前帧被编辑时重绘，避免整表重复解码。
+        const raster = layers.get(frame.id);
+        const live = isActive && raster?.canvas && !raster.loading;
+        if (card.raster !== raster || card.rasterVersion !== (raster?.version || 0) || card.boardKey !== boardKey || live) {
+          card.raster = raster;
+          card.rasterVersion = raster?.version || 0;
+          card.boardKey = boardKey;
+          drawTimelineThumb(card, raster);
+        }
+        const current = list.children[position];
+        if (current !== card.button) list.insertBefore(card.button, current || null);
+      });
+      const shown = playbackID || activeID;
+      if (timelineShown !== shown) {
+        timelineShown = shown;
+        timelineCards.get(shown)?.button.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      }
+    }
+
+    function updateTimelineButtons(editable) {
+      const order = orderedFrames();
+      const shown = playbackID || activeID;
+      const index = order.findIndex((frame) => frame.id === shown);
+      const activeIndex = order.findIndex((frame) => frame.id === activeID);
+      const full = order.length >= maxFrameCount;
+      const set = (id, disabled) => { const node = $(id); if (node) node.disabled = disabled; };
+      set('pixelAnimPrev', !editable || index <= 0);
+      set('pixelAnimNext', !editable || index < 0 || index >= order.length - 1);
+      set('pixelFrameAdd', !editable || full);
+      set('pixelFrameDup', !editable || !activeID || full);
+      set('pixelFrameDel', !editable || !activeID);
+      set('pixelFrameLeft', !editable || activeIndex <= 0);
+      set('pixelFrameRight', !editable || activeIndex < 0 || activeIndex >= order.length - 1);
     }
 
     function scheduleNextFrame() {
@@ -1571,6 +1717,32 @@
       mutate('/api/pixel/frames', { action: 'fps', fps });
     });
     listen('pixelAnimLoop', 'change', (event) => mutate('/api/pixel/frames', { action: 'loop', loop: event.target.checked }));
+    listen('pixelFrameDelay', 'change', (event) => {
+      const frame = layerMetadata();
+      const delayMult = Number(event.target.value);
+      if (!frame || !isAnimated()) return;
+      if (!Number.isInteger(delayMult) || delayMult < 1 || delayMult > 8) {
+        event.target.value = frame.delayMult || 1;
+        return;
+      }
+      mutate('/api/pixel/frames', { action: 'delayMult', frameId: frame.id, delayMult });
+    });
+    const timelineClick = (id, handler) => { const node = $(id); if (node) node.addEventListener('click', handler); };
+    timelineClick('pixelAnimPrev', () => stepFrame(-1));
+    timelineClick('pixelAnimNext', () => stepFrame(1));
+    timelineClick('pixelFrameAdd', () => { if (ownsEdits()) mutate('/api/pixel/frames', { action: 'add' }); });
+    timelineClick('pixelFrameDup', () => {
+      if (ownsEdits() && activeID) mutate('/api/pixel/frames', { action: 'duplicate', frameId: activeID, sourceFrameId: activeID });
+    });
+    timelineClick('pixelFrameDel', async () => {
+      if (!ownsEdits()) return;
+      const frame = layerMetadata();
+      if (!frame) return;
+      if (!await confirm('删除帧', '确定删除「' + (frame.name || '帧 ' + frame.index) + '」？', '删除')) return;
+      await mutate('/api/pixel/frames', { action: 'delete', frameId: frame.id });
+    });
+    timelineClick('pixelFrameLeft', () => moveFrame(-1));
+    timelineClick('pixelFrameRight', () => moveFrame(1));
     listen('pixelDraft', 'change', () => {
       if ($('pixelDraft').value === 'quantize') $('pixelSampling').open = true;
     });

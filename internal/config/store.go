@@ -364,6 +364,7 @@ func (s *Store) load() error {
 	v = migrate(v)
 	v = MigrateTo3(v)
 	v = MigrateTo4(v)
+	v = MigrateTo5(v)
 	norm, err := Normalize(v, DefaultSettings())
 	if err != nil {
 		s.cur = DefaultSettings()
@@ -410,10 +411,24 @@ func MigrateTo3(v Settings) Settings {
 // （true → layers，false → quick），之后的加载就是幂等的字段归一。
 func MigrateTo4(v Settings) Settings {
 	if v.Version < 4 {
-		v.Version = SettingsVersion
+		v.Version = 4
 	}
 	// 无论版本号如何，都做一次字段归一：手改坏的 genMode 也能被纠正，
 	// 且 MultiStep 派生值始终与 genMode 一致。
+	v.Agent = NormalizeGenMode(v.Agent)
+	return v
+}
+
+// MigrateTo5 把 v4 配置升到 v5：旧 anim 转为 quick + GIF，旧像素工作区转为 pixel 模式。
+// 像素工作区映射只执行一次，后续加载不会用旧 workspace 字段覆盖用户的新生方式。
+func MigrateTo5(v Settings) Settings {
+	if v.Version < 5 {
+		if v.Workspace == "pixel" {
+			v.Agent.GenMode = GenModePixel
+		}
+		v.Version = 5
+	}
+	// 直接调用本迁移也要处理旧 anim，并保证派生字段归一与重复执行幂等。
 	v.Agent = NormalizeGenMode(v.Agent)
 	return v
 }

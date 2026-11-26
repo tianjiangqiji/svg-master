@@ -322,8 +322,8 @@
     })),
   });
   if (!pixel) {
-    $('workspacePixel').classList.add('hidden');
-    $('projectWorkspacePixel').classList.add('hidden');
+    const option = document.querySelector('#genTrack [data-mode="pixel"]');
+    if (option) option.disabled = true;
   }
   const TAB_OF = { paneGen: 'gen', panePixel: 'gen', paneCode: 'code', paneStream: 'stream' };
   function showPane(id) {
@@ -352,52 +352,44 @@
       if (isPixel()) pixel.stopPlayback();
       workspacePrompts[workspace] = $('prompt').value;
       workspace = next;
-      $('prompt').value = workspacePrompts[next];
+      setPrompt(workspacePrompts[next] || '');
     }
     document.documentElement.dataset.workspace = workspace;
-    for (const [id, active] of [
-      ['workspaceSVG', !isPixel()], ['workspacePixel', isPixel()],
-      ['projectWorkspaceSVG', !isPixel()], ['projectWorkspacePixel', isPixel()],
-    ]) {
-      $(id).classList.toggle('active', active);
-      $(id).setAttribute('aria-pressed', String(active));
-    }
     const genTab = document.querySelector('#tabs [data-tab="gen"]');
     genTab.textContent = isPixel() ? '画板' : '预览';
     $('prompt').placeholder = isPixel()
       ? '描述要画什么，也可以指定主图构图或参考图 #1 的角色…' : '描述你要生成的 SVG…';
+    $('quickNewTitle').textContent = isPixel() ? '临时画板' : '快速生成';
+    $('quickNewHint').textContent = isPixel() ? '无需选择文件夹' : '空画板直接开工';
     showPane('paneGen');
     renderLayers();
     updateProjectBadge();
   }
 
   async function switchWorkspace(engine) {
-    if (engine === workspace || switchingWorkspace) return;
+    if (engine === workspace) return true;
+    if (switchingWorkspace) return false;
     if (S.running || preparingPixelRun || S.clearing || pixel?.actionBusy) {
       toast('请先结束当前任务', true);
-      return;
+      return false;
     }
     switchingWorkspace = true;
+    syncGenSwitch();
     try {
       if (isPixel() && hasWorkspaceProject()) await pixel.flush();
       showWorkspace(engine);
-      if (S.settings) {
-        S.settings.workspace = workspace;
-        persist();
-      }
       if (!hasWorkspaceProject() || !$('modalProject').classList.contains('hidden')) {
         openProjectModal({ boot: bootPickOpen });
       }
+      return true;
     } catch (error) {
       toast('当前工程未同步：' + error.message, true);
+      return false;
     } finally {
       switchingWorkspace = false;
+      syncGenSwitch();
     }
   }
-  $('workspaceSVG').addEventListener('click', () => switchWorkspace('svg'));
-  $('workspacePixel').addEventListener('click', () => switchWorkspace('pixel'));
-  $('projectWorkspaceSVG').addEventListener('click', () => switchWorkspace('svg'));
-  $('projectWorkspacePixel').addEventListener('click', () => switchWorkspace('pixel'));
 
   // ── 左栏折叠 ────────────────────────────────────────────
   $('leftToggle').addEventListener('click', () => {
@@ -669,8 +661,10 @@
     S.genMode = normalizeGenMode(st.agent.genMode, st.agent.multiStep);
     st.agent.genMode = S.genMode;
     st.agent.multiStep = S.genMode === 'layers';
+    $('gifEnabled').checked = !!st.agent.gif;
     syncGenSwitch();
-    if (!S.svg && $('prompt').value === '') $('prompt').value = S.defaultPrompt;
+    if (!S.svg && !isPixel() && stripGifPrompt($('prompt').value) === '') setPrompt(S.defaultPrompt);
+    else setPrompt($('prompt').value);
     S.canvas = st.canvas || S.canvas;
     syncCanvasSelect();
     updateBadge();
@@ -1932,19 +1926,66 @@
     noProj: '<b>尚未打开工程</b>：点击顶部「工程」选择模式。',
   };
 
-  // ── 生成方式：三级开关（快速 / 多图层 / 动图） ────────────
-  //
-  // 状态：S.genMode 三档之一；S.genLocked 一旦点过「开始生成」就为 true。
-  // 锁定规则（需求原文「已经开始后无法再切换回去，只有快速模式支持二次切换」）：
-  //   - 未锁定：三档随便切；
-  //   - 已锁定且当前停在快速模式：还允许再切一次，切走之后永久锁死；
-  //   - 已锁定且当前不是快速模式：三档全部不可点、不可拖。
-  // 新建 / 打开 / 关闭工程会解锁。
-  const GEN_MODES = ['quick', 'layers', 'anim'];
-  const GEN_LABEL = { quick: '快速模式', layers: '多图层模式', anim: '动图模式' };
+  // ── 创作模式：快速 / 多图层 / 像素 ──────────────────────
+  const GIF_MARKER = '\n\n[GIF 动图 · 固定提示]';
+  const GIF_SUFFIX = GIF_MARKER + '\n请输出可播放的动图：在根 SVG 下使用 <g data-frame="0">、<g data-frame="1"> 等完整帧分组，保持各帧画布与主体位置一致。';
+  function gifActive() {
+    return S.genMode === 'quick' && !!S.settings?.agent?.gif;
+  }
+  function stripGifPrompt(value) {
+    const text = String(value || '');
+    const index = text.indexOf(GIF_MARKER);
+    return index < 0 ? text : text.slice(0, index).replace(/[ \t]+$/g, '');
+  }
+  function setPrompt(value) {
+    const ta = $('prompt');
+    if (!ta) return;
+    const base = stripGifPrompt(value);
+    const next = gifActive() ? base + GIF_SUFFIX : base;
+    ta.value = next;
+    workspacePrompts[workspace] = next;
+  }
+  $('prompt').addEventListener('beforeinput', (event) => {
+    if (!gifActive()) return;
+    const ta = $('prompt');
+    const marker = ta.value.indexOf(GIF_MARKER);
+    if (marker < 0) return;
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    if (start === 0 && end === ta.value.length) return;
+    if (end > marker) {
+      event.preventDefault();
+      ta.setSelectionRange(marker, marker);
+    }
+  });
+  $('prompt').addEventListener('input', () => {
+    const ta = $('prompt');
+    const base = stripGifPrompt(ta.value);
+    const next = gifActive() ? base + GIF_SUFFIX : base;
+    if (next !== ta.value) {
+      const position = Math.min(ta.selectionStart, base.length);
+      ta.value = next;
+      ta.setSelectionRange(position, position);
+    }
+    workspacePrompts[workspace] = next;
+  });
+  $('gifEnabled').addEventListener('change', () => {
+    if (!S.settings) return;
+    S.settings.agent = S.settings.agent || {};
+    S.settings.agent.gif = $('gifEnabled').checked;
+    setPrompt($('prompt').value);
+    if (gifActive()) animMount();
+    else animUnmount();
+    syncGenSwitch();
+    persist();
+  });
 
-  // normalizeGenMode 兼容老设置：只有 multiStep 时按它推断。
+  // 三种创作模式共用一个生成锁；GIF 开关独立，不受该锁影响。
+  const GEN_MODES = ['quick', 'layers', 'pixel'];
+  const GEN_LABEL = { quick: '快速模式', layers: '多图层模式', pixel: '像素模式' };
+
   function normalizeGenMode(mode, multiStep) {
+    if (mode === 'anim') return 'quick';
     if (GEN_MODES.indexOf(mode) >= 0) return mode;
     return multiStep === false ? 'quick' : 'layers';
   }
@@ -1954,21 +1995,12 @@
     return ls.length;
   }
 
-  // genSwitchAllowed 当前是否还有切换资格。
-  //   没点过「开始生成」→ 三档之间随便来回切，包括从动图切回快速 / 多图层；
-  //   点过之后 → 只有仍停在快速模式时才留最后一次机会，切走即封死；
-  //   开始生成时若正停在动图模式，动图是单向门，直接封死。
   function genSwitchAllowed() {
-    if (!S.genLocked) return true;
-    return S.genMode === 'quick';
+    return !S.genLocked && !switchingWorkspace;
   }
 
-  // genBlockReason 当前被封死的原因（给 toast / tooltip 用）。
   function genBlockReason() {
-    if (S.genMode === 'anim') {
-      return '动图模式已开始生成，无法切回其他模式（点「快速生成」可重新选择）';
-    }
-    return '已经开始生成，无法再切换生成方式（点「快速生成」可重新选择）';
+    return '已经开始生成，本次创作已锁定模式（新建、打开或清空工程可重新选择）';
   }
 
   // canSwitchTo 能否切到目标档，返回 null 表示可以，否则返回拒绝原因。
@@ -1977,9 +2009,10 @@
     if (GEN_MODES.indexOf(target) < 0) return '未知的生成方式';
     if (!genSwitchAllowed()) return genBlockReason();
     const n = layerCount();
-    if (target !== 'layers' && n > 1) {
-      return `当前有 ${n} 个图层，先把多余的图层删到 1 个才能切到${GEN_LABEL[target]}`;
+    if (S.genMode !== 'pixel' && target === 'quick' && n > 1) {
+      return `当前有 ${n} 个图层，先把多余的图层删到 1 个才能切到快速模式`;
     }
+    if (target === 'pixel' && !pixel) return '当前环境未启用像素画模块';
     return null;
   }
 
@@ -1997,51 +2030,39 @@
       const on = btn.dataset.mode === mode;
       btn.classList.toggle('on', on);
       btn.setAttribute('aria-checked', on ? 'true' : 'false');
-      // 锁定后：只有「还能切」的档位保持可点，其余置灰
       const allowed = on || genSwitchAllowed();
-      btn.classList.toggle('allowed', allowed);
-      btn.disabled = !allowed;
+      const unavailable = btn.dataset.mode === 'pixel' && !pixel;
+      btn.classList.toggle('allowed', allowed && !unavailable);
+      btn.disabled = unavailable || !allowed;
     });
     thumb.style.transform = `translateX(${idx * 100}%)`;
     if (wrap) {
       const frozen = !genSwitchAllowed();
       wrap.classList.toggle('locked', frozen);
-      wrap.classList.toggle('sealed', frozen && S.genMode === 'anim');
+      wrap.classList.remove('sealed');
       wrap.title = frozen
         ? genBlockReason()
-        : '拖动或点击切换：快速模式一次成图；多图层模式分步按图层改造；动图模式单图层输出可播放动图';
+        : '拖动或点击切换：快速模式一次成图；多图层模式分步按图层改造；像素模式打开像素画板';
     }
+    $('gifOption').classList.toggle('hidden', S.genMode !== 'quick');
+    $('gifEnabled').checked = !!S.settings?.agent?.gif;
     renderGenHint();
     syncAnimBar();
   }
 
-  // renderGenHint 开关下方的一句话说明（锁定原因 / 当前档位的含义）。
   function renderGenHint() {
-    const el = $('genHint');
-    if (!el) return;
+    const hint = $('genHint');
+    if (!hint) return;
     let text = '';
-    let warn = false;
-    if (!S.genLocked) {
-      // 还没开始生成：三档自由切换，只说明当前档位干什么。
-      if (S.genMode === 'anim') text = '单图层输出可播放的动图，支持导出 GIF。';
-      else if (S.genMode === 'layers') text = '模型分多步、按图层改造画面。';
-      else text = '模型一次性交付整幅 SVG，最快。';
-    } else if (S.genMode === 'anim') {
-      text = '动图模式已开始生成：单向锁定，无法切回快速/多图层（点「快速生成」可重选）。';
-      warn = true;
-    } else if (S.genMode === 'quick') {
-      text = '已开始生成：仍是快速模式，可以切换最后一次，之后锁定。';
-      warn = true;
-    } else {
-      text = '已锁定：本次会话不再允许切换生成方式（新建或打开工程可解锁）。';
-      warn = true;
-    }
-    el.textContent = text;
-    el.classList.toggle('warn', warn);
+    if (S.genLocked) text = genBlockReason();
+    else if (S.genMode === 'layers') text = '模型分多步、按图层改造画面。';
+    else if (S.genMode === 'pixel') text = '使用像素画板、图层与底部动画时间轴。';
+    else text = '模型一次性交付整幅 SVG，可附加 GIF 动图要求。';
+    hint.textContent = text;
+    hint.classList.toggle('warn', S.genLocked);
   }
 
-  // setGenMode 切换生成方式（唯一入口：点击、拖动、键盘都走这里）。
-  function setGenMode(target, opts) {
+  async function setGenMode(target, opts) {
     const why = canSwitchTo(target);
     if (why) {
       if (!(opts && opts.silent)) toast(why, true);
@@ -2049,50 +2070,49 @@
       return false;
     }
     if (target === S.genMode) return true;
-    const prev = S.genMode;
+    const engine = target === 'pixel' ? 'pixel' : 'svg';
+    if (!(await switchWorkspace(engine))) {
+      syncGenSwitch();
+      return false;
+    }
     S.genMode = target;
     if (S.settings) {
       S.settings.agent = S.settings.agent || {};
       S.settings.agent.genMode = target;
       S.settings.agent.multiStep = target === 'layers';
-      persist();
     }
+    setPrompt($('prompt').value);
     syncGenSwitch();
-    if (target === 'anim') animMount();
-    else if (prev === 'anim') animUnmount();
-    if (!(opts && opts.silent)) addLog('LOG', `生成方式：${GEN_LABEL[target]}`);
+    persist();
+    if (!(opts && opts.silent)) addLog('LOG', `创作模式：${GEN_LABEL[target]}`);
     return true;
   }
 
-  // genLock 点「开始生成」时调用：锁死切换（快速模式仍留一次机会）。
+  // genLock 点「开始生成」时调用：锁定快速、多图层与像素三种模式。
   function genLock() {
     if (S.genLocked) return;
     S.genLocked = true;
     syncGenSwitch();
   }
 
-  // genUnlock 换工程时只解「开始生成」那把锁。
-  //   动图是单向门，换工程也不解除 —— 只有「快速生成」（清空重来）才回到快速模式。
+  // genUnlock 新建、打开或清空工程时解除生成锁；GIF 开关始终独立可用。
   function genUnlock() {
     if (!S.genLocked) return;
     S.genLocked = false;
     syncGenSwitch();
   }
 
-  // genResetToQuick 只有「快速生成」这一个入口能解动图单向门：
-  //   它本来就是清空画板重开，语义上等于换了一个快速模式的新会话。
   function genResetToQuick() {
-    const prev = S.genMode;
     S.genLocked = false;
     S.genMode = 'quick';
     if (S.settings) {
       S.settings.agent = S.settings.agent || {};
       S.settings.agent.genMode = 'quick';
       S.settings.agent.multiStep = false;
-      persist();
     }
-    if (prev === 'anim') animUnmount();
+    setPrompt($('prompt').value);
     syncGenSwitch();
+    persist();
   }
 
   function renderHints() {
@@ -2100,9 +2120,9 @@
     syncGenSwitch();
   }
 
-  // ── 动图模式：帧识别 / 播放 / 导出 GIF ────────────────────
+  // ── 快速模式 GIF：帧识别 / 播放 / 导出 ───────────────────
   //
-  // 动图模式仍然只有「一个图层」，动起来靠 SVG 自己表达，分三种来源：
+  // GIF 是快速模式的可选能力，仍然只有「一个图层」，分三种来源：
   //   frames — 根下按 data-frame="0/1/2…" 分组的帧（提示词里的首选交付格式）；
   //   smil   — <animate>/<animateTransform>/<set> 等 SMIL 动画；
   //   static — 既没帧分组也没动画，仍然可以导出单帧 GIF。
@@ -2197,7 +2217,7 @@
   function syncAnimBar() {
     const bar = $('animBar');
     if (!bar) return;
-    const on = S.genMode === 'anim';
+    const on = gifActive();
     bar.classList.toggle('hidden', !on);
     // 导出 GIF 常驻顶栏（保存按钮左侧），只有动图模式才露面。
     const gif = $('btnGif');
@@ -2251,7 +2271,7 @@
     animPlay();
   }
 
-  // animMount 进入动图模式：显示工具条、从第 0 帧开始播。
+  // animMount 开启 GIF：显示工具条、从第 0 帧开始播。
   function animMount() {
     const a = S.anim;
     a.index = 0;
@@ -2262,16 +2282,16 @@
     if (a.source === 'frames' || a.source === 'smil') animPlay();
   }
 
-  // animUnmount 离开动图模式：停表、把被藏起来的帧放回去。
+  // animUnmount 关闭 GIF：停表、把被藏起来的帧放回去。
   function animUnmount() {
     animStop();
     const root = animRoot();
     if (root) animShowAll(root);
   }
 
-  // animOnSVG 画布换了新图时调用：重新判定来源，动图模式下自动接着播。
+  // animOnSVG 画布换了新图时调用：重新判定来源，GIF 开启时自动接着播。
   function animOnSVG() {
-    if (S.genMode !== 'anim') return;
+    if (!gifActive()) return;
     const a = S.anim;
     animStop();
     a.index = 0;
@@ -2550,7 +2570,6 @@
     const subject = animated ? '帧' : '图层';
     $('layerBlockTitle').textContent = animated ? '帧序列' : '图层';
     document.documentElement.dataset.pixelMode = animated ? 'anim' : 'static';
-    $('pixelFrameProperties').classList.toggle('hidden', !animated);
     $('btnAddLayer').title = '新建' + subject;
     $('btnLayerDel').title = '删除当前' + subject;
     $('btnLayerUp').title = animated ? '前移一帧' : '上移一层';
@@ -2569,8 +2588,6 @@
       $('btnLayerDel').disabled = !editable || !activeLayer || activeLayer.locked || (animated && countable.length <= 1);
       $('btnLayerUp').disabled = !editable || !activeLayer || activeLayer.index === (animated ? 1 : countable.length);
       $('btnLayerDown').disabled = !editable || !activeLayer || activeLayer.index === (animated ? countable.length : 1);
-      $('pixelFrameDelay').disabled = !editable || !activeLayer || activeLayer.locked;
-      $('pixelFrameDelay').value = activeLayer?.delayMult || 1;
       $('pixelLayerOpacity').value = activeLayer ? Math.round((activeLayer.opacity ?? 1) * 100) : 100;
       $('pixelBlend').value = activeLayer?.blend || 'normal';
     } else {
@@ -2723,13 +2740,6 @@
     const layer = pickedLayer();
     if (layer) layerOp('duplicate', { id: layer.id });
   });
-  $('pixelFrameDelay').addEventListener('change', (event) => {
-    const frame = pickedLayer();
-    const delayMult = Number(event.target.value);
-    if (!frame) return;
-    if (!Number.isInteger(delayMult) || delayMult < 1 || delayMult > 8) { event.target.value = frame.delayMult || 1; return; }
-    layerOp('delayMult', { id: frame.id, delayMult });
-  });
   $('btnLayerDel').addEventListener('click', () => {
     const l = pickedLayer();
     const subject = pixelAnimation() ? '帧' : '图层';
@@ -2839,10 +2849,9 @@
       setGenMode(GEN_MODES[idx]);
       return;
     }
-    if (!setGenMode(GEN_MODES[idx])) {
-      // 被拒绝：thumb 弹回当前档
-      genThumbToIndex(GEN_MODES.indexOf(S.genMode), true);
-    }
+    setGenMode(GEN_MODES[idx]).then((changed) => {
+      if (!changed) genThumbToIndex(GEN_MODES.indexOf(S.genMode), true);
+    });
   }
 
   $('genTrack')?.addEventListener('pointerup', genDragEnd);
@@ -2946,11 +2955,21 @@
       closeModal('modalProject', true);
       closeModal('modalNewProj');
       await loadProjectMeta();
-      // 换了工程就解锁生成方式：新工程的会话是新的，切换资格也该重置。
-      // 「快速生成」额外解动图单向门（清空重来 = 新的快速会话）；其余入口不解。
-      if (!isPixel()) {
-        if (body && body.mode === 'quick') genResetToQuick();
-        else genUnlock();
+      // 新建、打开或清空工程是新的创作上下文；另存为不解除当前锁。
+      if (path === '/api/project/open' || oldProject?.projectId !== r?.project?.projectId) {
+        const target = r.project?.engine === 'pixel'
+          ? 'pixel'
+          : body?.mode === 'quick' || S.genMode === 'pixel' ? 'quick' : S.genMode;
+        S.genLocked = false;
+        S.genMode = target;
+        if (S.settings) {
+          S.settings.agent = S.settings.agent || {};
+          S.settings.agent.genMode = target;
+          S.settings.agent.multiStep = target === 'layers';
+        }
+        setPrompt($('prompt').value);
+        syncGenSwitch();
+        persist();
       }
       return r;
     } catch (e) {
@@ -2978,6 +2997,12 @@
   // 方框一：快速生成 → 清掉临时工程，空画板直接开工
   // 工程本来就是空的（无图层内容、无对话历史）时不必多问一句，直接进。
   $('btnQuickNew').addEventListener('click', () => {
+    if (isPixel()) {
+      projectAction('/api/project/open', {
+        mode: 'quick', engine: 'pixel', fresh: false,
+      }, '已打开临时像素画板');
+      return;
+    }
     const pj = S.project;
     const blank = !pj || !pj.open || pj.empty === true;
     const go = async () => {
@@ -2999,11 +3024,6 @@
       ok: '开始',
       onOk: go,
     });
-  });
-  $('pixelQuickNew').addEventListener('click', () => {
-    projectAction('/api/project/open', {
-      mode: 'quick', engine: 'pixel', fresh: false,
-    }, '已打开临时像素画板');
   });
 
   // 方框二：新建项目 → 只填名字，确认后弹文件夹选择器选位置
@@ -3179,8 +3199,8 @@
     S.runID = 'r' + rand();
     S.stopping = false;
     const seq = ++S.runSeq;
-    // 一旦开始生成就锁定生成方式：当前若停在快速模式，还留最后一次切换机会。
-    if (!pixelRun) genLock();
+    // 快速、多图层与像素模式一旦开始生成都锁定。
+    genLock();
     if (pixelRun) {
       pixel.beginTurn();
       S.pixelTerminal = null;
@@ -3578,7 +3598,7 @@
         S.liveSession = '';
         S.runID = '';
         S.images = [];
-        $('prompt').value = '';
+        setPrompt('');
         previewSVG = '';
         S.livePreview = false;
         if (isPixel()) {
@@ -3674,7 +3694,7 @@
     // 工程模式下「保存」= 落盘（图层文件 + project.json）；
     // 按住 Alt（或快速模式）时退化为导出单文件 SVG。
     // 动图模式例外：动图没有可落盘的图层工程，保存一律导出 SVG 源码文件。
-    if (S.genMode !== 'anim' && !ev.altKey && S.project && S.project.open && S.project.mode === 'project') {
+    if (!gifActive() && !ev.altKey && S.project && S.project.open && S.project.mode === 'project') {
       try {
         const r = await api('/api/project/save', { method: 'POST', body: {} });
         addLog('LOG', `工程已保存${r && r.files ? `（${r.files} 个文件）` : ''}`);
@@ -3717,8 +3737,8 @@
   function updateSaveTitle() {
     const b = $('btnSave');
     if (!b) return;
-    if (S.genMode === 'anim') {
-      // 动图模式：保存=导出 SVG 源码文件（不含 GIF 编码，导出动图请用旁边那个按钮）
+    if (gifActive()) {
+      // GIF 开关开启：保存 SVG 源码，导出动图使用旁边按钮。
       b.title = '导出 SVG 源码文件（动图模式保存代码，导出 GIF 用左侧按钮）';
       b.textContent = '保存代码';
       return;
@@ -4287,7 +4307,7 @@
     const cur = ta.value;
     const subject = extractSubject(cur);
     let text = (p.template || '').split('{{subject}}').join(subject);
-    ta.value = text;
+    setPrompt(text);
     closeModal('modalPrompts');
     ta.focus();
     if (!subject) {

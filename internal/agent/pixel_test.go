@@ -69,7 +69,7 @@ func TestPixelTurnInputsSelectionAndInspection(t *testing.T) {
 	recorder := &recordingClient{inner: fake}
 	deps := testDeps(fake, nil)
 	deps.Client, deps.Pixel, deps.Vision = recorder, bridge, true
-	deps.Settings.GenMode = config.GenModeAnim
+	deps.Settings.GenMode = config.GenModePixel
 	deps.Settings.CompressOn = true
 	engine := New(deps)
 	selection := &pixel.Selection{Rect: pixel.Rect{X: 4, Y: 3, W: 4, H: 4}, Runs: [][]int{{0, 2}, {6, 2}}}

@@ -43,7 +43,7 @@ func buildPromptWithSpec(canvas config.CanvasPreset, spec string) string {
 
 // buildLayersSystemPrompt 多图层模式的系统提示词。
 //
-// 与 quick/anim 的关键差别：输出规范换成「分层交付」，并且必须与图层工作区说明
+// 与 quick 的关键差别：输出规范换成「分层交付」，并且必须与图层工作区说明
 // 一起注入——只给工具不给规范时，模型经常仍一次性 emit_svg 整幅图，
 // 结果多图层模式退化成单图层（用户反馈的「模型有些随机」正是这个原因）。
 func buildLayersSystemPrompt(canvas config.CanvasPreset) string {
@@ -82,23 +82,6 @@ func contextClearedNote() string {
 		"用户刚清空了对话上下文，之前的对话你已看不到，**但画布与图层文件都还在**。\n" +
 		"在动任何东西之前，先用 list_layers 看清工程结构，再 read_layer 读你打算改的图层，" +
 		"并结合作品现有内容判断用户意图；不要假设画布是空的。"
-}
-
-// animatedNote 动图模式的交付约定：仍然是一张画布、一个图层，但画面要会动。
-// 只有动图模式下才注入，且此时不下发图层工具。
-func animatedNote() string {
-	return "## 动图模式\n" +
-		"本次交付**一张会动的 SVG**，仍然是一整幅画面、一个图层，不要拆图层、不要分多个文件。\n" +
-		"用 emit_svg 交付**完整可播放**的 SVG，动画部分遵守以下约定：\n" +
-		"- 首选**帧分组**：在根 <svg> 下按播放顺序写 <g data-frame=\"0\">…</g>、<g data-frame=\"1\">…</g>…，" +
-		"每帧是一张独立的完整画面（自己带齐需要的图形），导出 GIF 时逐帧精确采样；\n" +
-		"- 根元素上标注帧率与循环：data-fps=\"8\"（1–30 的整数，默认 8）、data-loop=\"1\"；\n" +
-		"- 帧数控制在 4–24 帧：太少看不出动作，太多文件大且导出慢；\n" +
-		"- 所有帧共用同一画布尺寸与构图基准，只改需要动的部分（位置、形状、颜色、透明度），" +
-		"不要每帧换一套构图，否则播放时会跳；\n" +
-		"- 也支持 SMIL（<animate> / <animateTransform> / <set>）做连续动画，但**帧分组优先**：" +
-		"SMIL 在导出 GIF 时只能按时间采样，精度不如帧分组；\n" +
-		"- 动画要能无缝循环：末帧接回首帧时不出现明显跳变。"
 }
 
 // ratioString 把宽高化简成 "w:h"。

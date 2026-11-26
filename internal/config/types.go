@@ -10,8 +10,8 @@ import (
 const AppVersion = "1.4.1"
 
 // SettingsVersion 是 settings.json 的格式版本。
-// v4 引入生成方式三级开关（agent.genMode）。
-const SettingsVersion = 4
+// v5 引入像素生成方式与 GIF 开关，并迁移旧 anim 配置。
+const SettingsVersion = 5
 
 // 协议枚举。与前端下拉、llm 层实现一一对应。
 const (
@@ -31,10 +31,12 @@ const (
 //
 //   - GenModeQuick  一次性交付整幅 SVG，不下发图层工具，也不注入分步引导；
 //   - GenModeLayers 分多步、按图层改造画面，下发图层读写工具；
-//   - GenModeAnim   仍是单个图层，但要求交付可播放的动图（帧分组，兼容 SMIL）。
+//   - GenModePixel  使用像素画布与像素工具；
+//   - GenModeAnim   仅用于迁移旧配置，不是合法的当前生成方式。
 const (
 	GenModeQuick  = "quick"
 	GenModeLayers = "layers"
+	GenModePixel  = "pixel"
 	GenModeAnim   = "anim"
 )
 
@@ -78,30 +80,38 @@ func NormalizeMaxSteps(n int) int {
 // ValidGenMode 判断生成方式是否合法；空串视为未设置。
 func ValidGenMode(m string) bool {
 	switch m {
-	case GenModeQuick, GenModeLayers, GenModeAnim:
+	case GenModeQuick, GenModeLayers, GenModePixel:
 		return true
 	}
 	return false
 }
 
-// NormalizeGenMode 把生成方式归一到合法值，并回填派生的 MultiStep。
+// NormalizeGenMode 把生成方式归一到合法值，并回填派生的 MultiStep 与 GIF。
 //
 // 规则：合法值原样保留；空值按 MultiStep 推断（旧配置没有 genMode 字段）；
-// 非法值回落到 layers（历史默认行为）。返回值是归一后的副本，不修改入参。
+// 旧 anim 迁移为 quick 并打开 GIF；非法值回落到 layers（历史默认行为）。
+// 返回值是归一后的副本，不修改入参。
 func NormalizeGenMode(a AgentSettings) AgentSettings {
 	mode := a.GenMode
-	if mode == "" {
+	switch mode {
+	case "":
 		if a.MultiStep {
 			mode = GenModeLayers
 		} else {
 			mode = GenModeQuick
 		}
+	case GenModeAnim:
+		mode = GenModeQuick
+		a.GIF = true
 	}
 	if !ValidGenMode(mode) {
 		mode = GenModeLayers
 	}
 	a.GenMode = mode
 	a.MultiStep = mode == GenModeLayers
+	if mode != GenModeQuick {
+		a.GIF = false
+	}
 	return a
 }
 
@@ -227,9 +237,11 @@ type AgentSettings struct {
 	// TimeoutSec 单次响应「无任何数据」的容忍时长（秒）：首字节等待与流中途空闲共用。
 	// 只要连接还在吐数据就不会被打断；0/缺失按默认值处理，-1 表示不限时。
 	TimeoutSec int `json:"timeoutSec"`
-	// GenMode 生成方式，左栏三级开关的唯一真源：quick / layers / anim。
+	// GenMode 生成方式，左栏三级开关的唯一真源：quick / layers / pixel。
 	// 由它派生 MultiStep 与图层工具下发；见 GenMode* 常量。
 	GenMode string `json:"genMode"`
+	// GIF 仅在 quick 模式下有意义；其他模式归一时清零。
+	GIF bool `json:"gif"`
 	// MultiStep 是 GenMode 的派生值（layers 时为 true），保留给旧配置与旧代码读取。
 	// 写入时由 NormalizeGenMode 统一回填，不要单独设置它。
 	MultiStep bool `json:"multiStep"`
@@ -293,7 +305,7 @@ type Settings struct {
 // DefaultSettings 出厂默认：一个指向 OpenAI 官方地址的空供应商，方便用户直接填 Key。
 func DefaultSettings() Settings {
 	return Settings{
-		Version:   4,
+		Version:   SettingsVersion,
 		Workspace: "svg",
 		Providers: []Provider{{
 			ID:       "p1",
@@ -312,6 +324,7 @@ func DefaultSettings() Settings {
 			CompressAt: 75,
 			TimeoutSec: DefaultTimeoutSec,
 			GenMode:    GenModeLayers,
+			GIF:        false,
 			MultiStep:  true,
 		},
 		Layers: LayerSettings{Enabled: true, PanelHeight: 220},

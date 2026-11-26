@@ -305,9 +305,6 @@ func (e *Engine) run(ctx context.Context, t Task) (Stats, error) {
 			system += "\n\n" + multiStepNote
 			system += "\n\n" + layerToolsNote()
 		}
-		if mode == config.GenModeAnim {
-			system += "\n\n" + animatedNote()
-		}
 		if e.deps.ContextClearedAt > 0 && e.deps.LayerTools {
 			system += "\n\n" + contextClearedNote()
 		}

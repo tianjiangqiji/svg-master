@@ -38,10 +38,6 @@
       <span class="brand-mark">SVG</span>
       <span class="brand-text"><b>SVG Master</b></span>
     </div>
-    <nav class="tabs pixel-workspaces" aria-label="工作区">
-      <button class="tab active" type="button" id="workspaceSVG" aria-pressed="true">矢量 SVG</button>
-      <button class="tab" type="button" id="workspacePixel" aria-pressed="false">像素画</button>
-    </nav>
     <nav class="tabs" id="tabs">
       <button class="tab active" type="button" data-tab="gen">预览</button>
       <button class="tab" type="button" data-tab="code" data-svg-only>代码</button>
@@ -81,13 +77,21 @@
 
       <div class="group">
         <div class="group-head"><span>生成</span><span class="muted tiny" id="canvasHint"></span></div>
-        <div class="fld" data-svg-only><span>生成方式</span>
-          <div class="gen-switch" id="genSwitch" title="拖动或点击切换：快速模式一次成图；多图层模式分步按图层改造；动图模式单图层输出可播放动图">
-            <div class="gen-track" id="genTrack" role="radiogroup" aria-label="生成方式">
+        <div class="fld"><span>创作模式</span>
+          <div class="gen-switch" id="genSwitch" title="拖动或点击切换：快速、多图层与像素画">
+            <div class="gen-track" id="genTrack" role="radiogroup" aria-label="创作模式">
               <div class="gen-thumb" id="genThumb" aria-hidden="true"></div>
               <button class="gen-opt" type="button" data-mode="quick" role="radio" aria-checked="false">快速</button>
               <button class="gen-opt" type="button" data-mode="layers" role="radio" aria-checked="false">多图层</button>
-              <button class="gen-opt" type="button" data-mode="anim" role="radio" aria-checked="false">动图</button>
+              <button class="gen-opt" type="button" data-mode="pixel" role="radio" aria-checked="false">像素</button>
+            </div>
+            <div class="gif-option" id="gifOption">
+              <label class="switch-control" for="gifEnabled">
+                <input id="gifEnabled" type="checkbox" role="switch" />
+                <span class="switch-track" aria-hidden="true"><span></span></span>
+                <span>GIF 动图</span>
+              </label>
+              <span class="muted tiny">在提示词末尾加入动图要求</span>
             </div>
             <div class="gen-hint" id="genHint"></div>
           </div>
@@ -121,26 +125,6 @@
           <input type="file" id="fileInput" accept="image/*" multiple hidden />
         </div>
         <div class="pixel-inputs" data-pixel-only>
-          <label class="fld"><span>像素形态</span>
-            <select id="pixelMode"><option value="static">静态多层</option><option value="anim">动图（单层多帧）</option></select>
-          </label>
-          <label class="fld"><span>像素画布</span>
-            <select id="pixelSizePreset" aria-label="尺寸预设">
-              <option value="">自定义</option><option>16×16</option><option>24×24</option><option>32×32</option>
-              <option>48×48</option><option>64×64</option><option>96×96</option><option>128×128</option>
-              <option>192×192</option><option>256×256</option><option>320×240</option><option>512×512</option>
-              <option>768×768</option><option>1024×1024</option>
-            </select>
-          </label>
-          <div class="pixel-size">
-            <input id="pixelWidth" type="number" min="8" max="2048" step="1" value="32" aria-label="宽度" />
-            <span>×</span>
-            <input id="pixelHeight" type="number" min="8" max="2048" step="1" value="32" aria-label="高度" />
-          </div>
-          <div class="pixel-size">
-            <select id="pixelResizeMode" aria-label="调整画布方式"><option value="crop">从左上裁切 / 补透明</option><option value="resample">最近邻缩放</option></select>
-            <button class="btn" type="button" id="pixelResize">应用尺寸</button>
-          </div>
           <label class="fld"><span>创作路径</span>
             <select id="pixelDraft">
               <option value="vision">AI 视觉模仿 / 创作</option>
@@ -148,27 +132,54 @@
               <option value="prompt">自然语言直接绘制</option>
             </select>
           </label>
-          <div class="fld">
-            <span>主图</span>
-            <button class="drop pixel-drop" id="pixelMainDrop" type="button">拖拽 / 粘贴 / 选择主图</button>
-            <input id="pixelMainFile" type="file" accept="image/*" hidden />
-            <div class="pixel-thumbs" id="pixelMainThumb"></div>
+          <div class="pixel-asset-grid">
+            <div class="fld">
+              <span>主图</span>
+              <button class="drop pixel-drop" id="pixelMainDrop" type="button">选择主图</button>
+              <input id="pixelMainFile" type="file" accept="image/*" hidden />
+              <div class="pixel-thumbs" id="pixelMainThumb"></div>
+            </div>
+            <div class="fld">
+              <span>参考图</span>
+              <button class="drop pixel-drop" id="pixelRefDrop" type="button">添加参考图</button>
+              <input id="pixelRefFile" type="file" accept="image/*" multiple hidden />
+              <div class="pixel-thumbs" id="pixelRefThumbs"></div>
+            </div>
           </div>
-          <div class="fld">
-            <span>参考图</span>
-            <button class="drop pixel-drop" id="pixelRefDrop" type="button">拖拽 / 粘贴 / 选择参考图</button>
-            <input id="pixelRefFile" type="file" accept="image/*" multiple hidden />
-            <div class="pixel-thumbs" id="pixelRefThumbs"></div>
-          </div>
-          <details id="pixelSampling" class="pixel-sampling">
-            <summary>采样参数</summary>
-            <label class="fld"><span>采样方式</span><select id="pixelSamplingMode"><option value="box">区域平均</option><option value="nearest">最近邻</option><option value="center">中心采样</option></select></label>
-            <label class="fld"><span>适配方式</span><select id="pixelSamplingFit"><option value="fit">完整保留</option><option value="cover">居中裁切</option><option value="stretch">拉伸铺满</option></select></label>
-            <label class="fld"><span>抖动</span><select id="pixelDither"><option value="none">无</option><option value="bayer4">有序</option><option value="floyd">误差扩散</option></select></label>
-            <label class="fld"><span>颜色上限 <input id="pixelColors" type="number" min="4" max="64" step="1" value="16" /></span></label>
-            <label class="chk"><input id="pixelUsePalette" type="checkbox" /><span>使用当前调色板</span></label>
+          <details class="pixel-advanced" id="pixelAdvanced">
+            <summary>画布与采样设置</summary>
+            <div class="pixel-advanced-body">
+              <label class="fld"><span>像素形态</span>
+                <select id="pixelMode"><option value="static">静态多层</option><option value="anim">动图（单层多帧）</option></select>
+              </label>
+              <label class="fld"><span>尺寸预设</span>
+                <select id="pixelSizePreset" aria-label="尺寸预设">
+                  <option value="">自定义</option><option>16×16</option><option>24×24</option><option>32×32</option>
+                  <option>48×48</option><option>64×64</option><option>96×96</option><option>128×128</option>
+                  <option>192×192</option><option>256×256</option><option>320×240</option><option>512×512</option>
+                  <option>768×768</option><option>1024×1024</option>
+                </select>
+              </label>
+              <div class="pixel-size">
+                <input id="pixelWidth" type="number" min="8" max="2048" step="1" value="32" aria-label="宽度" />
+                <span>×</span>
+                <input id="pixelHeight" type="number" min="8" max="2048" step="1" value="32" aria-label="高度" />
+              </div>
+              <div class="pixel-size">
+                <select id="pixelResizeMode" aria-label="调整画布方式"><option value="crop">裁切 / 补透明</option><option value="resample">最近邻缩放</option></select>
+                <button class="btn" type="button" id="pixelResize">应用尺寸</button>
+              </div>
+              <details id="pixelSampling" class="pixel-sampling">
+                <summary>采样参数</summary>
+                <label class="fld"><span>采样方式</span><select id="pixelSamplingMode"><option value="box">区域平均</option><option value="nearest">最近邻</option><option value="center">中心采样</option></select></label>
+                <label class="fld"><span>适配方式</span><select id="pixelSamplingFit"><option value="fit">完整保留</option><option value="cover">居中裁切</option><option value="stretch">拉伸铺满</option></select></label>
+                <label class="fld"><span>抖动</span><select id="pixelDither"><option value="none">无</option><option value="bayer4">有序</option><option value="floyd">误差扩散</option></select></label>
+                <label class="fld"><span>颜色上限 <input id="pixelColors" type="number" min="4" max="64" step="1" value="16" /></span></label>
+                <label class="chk"><input id="pixelUsePalette" type="checkbox" /><span>使用当前调色板</span></label>
+              </details>
+              <button id="pixelQuantize" class="btn" type="button">生成像素底稿</button>
+            </div>
           </details>
-          <button id="pixelQuantize" class="btn" type="button">生成像素底稿</button>
         </div>
         <div class="row2 run-row">
           <button class="btn primary run-btn" id="btnRun" type="button">开始生成</button>
@@ -219,13 +230,6 @@
           <label id="pixelOverlayField">主图叠加 <input id="pixelOverlayOpacity" type="range" min="0" max="80" value="0" /></label>
           <button class="btn sm" id="pixelCompare" type="button" aria-pressed="false">分屏对照</button>
         </div>
-        <div class="canvas-toolbar pixel-toolbar hidden" id="pixelAnimBar" role="toolbar" aria-label="像素动画">
-          <button class="btn sm" id="pixelAnimPlay" type="button" aria-label="播放">▶</button>
-          <label>帧率 <input id="pixelAnimFPS" aria-label="帧率" type="number" min="1" max="30" value="8" /></label>
-          <label class="chk"><input id="pixelAnimLoop" type="checkbox" checked /><span>循环</span></label>
-          <label class="chk"><input id="pixelAnimOnion" type="checkbox" /><span>上一帧洋葱皮</span></label>
-          <span class="mono" id="pixelAnimPosition">1 / 1</span>
-        </div>
         <div class="pixel-board">
           <div class="pixel-tools" role="toolbar" aria-label="绘图工具">
             <button class="btn sm" type="button" data-pixel-tool="pan" title="平移（H 或空格拖动）">平移</button>
@@ -274,6 +278,29 @@
             <button class="btn sm" id="pixelPaletteExtract" type="button">提色</button>
           </div>
           <div class="pixel-swatches" id="pixelSwatches" aria-label="调色板"></div>
+        </div>
+        <div class="pixel-timeline hidden" id="pixelTimeline" role="group" aria-label="像素动画时间轴">
+          <div class="pixel-timeline-toolbar">
+            <div class="pixel-transport" role="toolbar" aria-label="动画播放">
+              <button class="btn sm icon" id="pixelAnimPrev" type="button" aria-label="上一帧" title="上一帧">←</button>
+              <button class="btn sm icon" id="pixelAnimPlay" type="button" aria-label="播放" title="播放 / 暂停">▶</button>
+              <button class="btn sm icon" id="pixelAnimNext" type="button" aria-label="下一帧" title="下一帧">→</button>
+              <span class="mono pixel-frame-position" id="pixelAnimPosition">1 / 1</span>
+            </div>
+            <label>帧率 <input id="pixelAnimFPS" aria-label="帧率" type="number" min="1" max="30" value="8" /></label>
+            <label class="chk"><input id="pixelAnimLoop" type="checkbox" checked /><span>循环</span></label>
+            <label class="chk"><input id="pixelAnimOnion" type="checkbox" /><span>洋葱皮</span></label>
+            <label>时长 <input id="pixelFrameDelay" aria-label="当前帧时长倍数" type="number" min="1" max="8" value="1" />×</label>
+            <div class="spacer"></div>
+            <div class="pixel-frame-actions" role="toolbar" aria-label="帧编辑">
+              <button class="btn sm" id="pixelFrameLeft" type="button" title="当前帧前移">前移</button>
+              <button class="btn sm" id="pixelFrameRight" type="button" title="当前帧后移">后移</button>
+              <button class="btn sm" id="pixelFrameAdd" type="button">＋ 帧</button>
+              <button class="btn sm" id="pixelFrameDup" type="button">复制</button>
+              <button class="btn sm danger" id="pixelFrameDel" type="button">删除</button>
+            </div>
+          </div>
+          <div class="pixel-timeline-frames" id="pixelTimelineFrames" role="list" aria-label="动画帧"></div>
         </div>
         <div class="issues pixel-status" id="pixelStatus" role="status" aria-live="polite"></div>
       </div>
@@ -381,9 +408,6 @@
               <option value="difference">差值</option><option value="exclusion">排除</option>
               <option value="hue">色相</option><option value="saturation">饱和度</option><option value="color">颜色</option><option value="luminosity">明度</option>
             </select></label>
-          </div>
-          <div class="pixel-frame-properties hidden" id="pixelFrameProperties">
-            <label>帧时长倍数 <input id="pixelFrameDelay" aria-label="帧时长倍数" type="number" min="1" max="8" value="1" /></label>
           </div>
         </div>
       </div>
@@ -561,16 +585,9 @@
       <button class="mini" id="projClose" type="button" title="关闭">×</button>
     </div>
     <div class="modal-body proj-body">
-      <div class="tabs pixel-project-workspaces" aria-label="工程类型">
-        <button class="tab active" id="projectWorkspaceSVG" type="button" aria-pressed="true">矢量 SVG</button>
-        <button class="tab" id="projectWorkspacePixel" type="button" aria-pressed="false">像素画</button>
-      </div>
       <div class="proj-tiles">
-        <button class="proj-tile" id="btnQuickNew" type="button" data-svg-only>
-          <b>快速生成</b><small>空画板直接开工</small>
-        </button>
-        <button class="proj-tile" id="pixelQuickNew" type="button" data-pixel-only>
-          <b>临时画板</b><small>无需选择文件夹</small>
+        <button class="proj-tile" id="btnQuickNew" type="button">
+          <b id="quickNewTitle">快速生成</b><small id="quickNewHint">空画板直接开工</small>
         </button>
         <button class="proj-tile" id="btnProjNew" type="button">
           <b>新建项目</b><small>填名字后选文件夹</small>

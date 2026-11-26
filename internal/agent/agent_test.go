@@ -582,3 +582,33 @@ func TestSystemPromptIsMinimal(t *testing.T) {
 		t.Fatalf("系统提示词仍偏大：%d 字节\n%s", len(sys), sys)
 	}
 }
+
+// 旧 anim 配置只能作为迁移输入：运行时按 quick 处理，不再注入动图或分层提示。
+func TestLegacyAnimModeUsesQuickPrompt(t *testing.T) {
+	c := &fakeClient{steps: []fakeStep{textStep("完成。")}}
+	recorder := &recordingClient{inner: c}
+	deps := testDeps(c, nil)
+	deps.Client = recorder
+	deps.Settings.GenMode = config.GenModeAnim
+	deps.Settings.MultiStep = true
+	if _, err := New(deps).Run(context.Background(), Task{Prompt: "画一个圆"}); err != nil {
+		t.Fatalf("Run 返回错误：%v", err)
+	}
+	if len(recorder.requests) != 1 {
+		t.Fatalf("模型请求数 = %d，期望 1", len(recorder.requests))
+	}
+	req := recorder.requests[0]
+	if !strings.Contains(req.System, "emit_svg") {
+		t.Fatalf("旧 anim 未走 quick 输出规范：\n%s", req.System)
+	}
+	for _, banned := range []string{"## 动图模式", "## 分层交付要求"} {
+		if strings.Contains(req.System, banned) {
+			t.Fatalf("旧 anim 不应注入 %q：\n%s", banned, req.System)
+		}
+	}
+	for _, tool := range req.Tools {
+		if tool.Name == ToolCreateLayer {
+			t.Fatal("旧 anim 迁移为 quick 后不应下发图层工具")
+		}
+	}
+}
