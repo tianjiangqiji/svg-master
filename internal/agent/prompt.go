@@ -85,22 +85,19 @@ func contextClearedNote() string {
 		"并结合作品现有内容判断用户意图；不要假设画布是空的。"
 }
 
-// playbackNote 把左栏的播放设置（帧率上限、倍速、导出倍率）转成一行提示。
+// playbackNote 把左栏的生成帧率转成提示。
 //
-// 这三项都由用户用滑块设定、并随请求落盘，模型必须按它们安排帧数与停顿，
-// 否则交付的动图在用户机器上会被上限截断或播放过快。
-func playbackNote(a config.AgentSettings, exportScale int, pixel bool) string {
+// 生成帧率会随提示词下发给模型，模型据此安排帧数与节奏；画布上的展示帧率默认跟随它，
+// 但最终输出帧率以用户在画布工具条上设定的展示帧率为准。
+func playbackNote(a config.AgentSettings, pixel bool) string {
 	a = config.NormalizePlayback(a)
 	var b strings.Builder
-	b.WriteString("## 播放设置（用户在左栏用滑块设定）\n")
-	fmt.Fprintf(&b, "- 帧率上限：%d fps，交付的帧率不得超过它\n", a.MaxFPS)
-	fmt.Fprintf(&b, "- 播放倍速：%s×，用户预览与导出共用这一倍数\n", trimFloat(a.PlaySpeed))
+	b.WriteString("## 动画帧率（用户在左栏用滑块设定）\n")
+	fmt.Fprintf(&b, "- 生成帧率：%d fps，按此设计动画的节奏与帧数\n", a.MaxFPS)
 	if pixel {
-		fmt.Fprintf(&b, "- 导出倍率：%d×，导出位图时按此放大（长边受上限约束）\n", exportScale)
-		b.WriteString("- 帧率与倍速由用户控制，不要试图用 pixel_frame_op 修改 fps；需要强调节奏时用 delayMult。")
+		b.WriteString("- 帧率由用户控制，不要试图用 pixel_frame_op 修改 fps；需要强调节奏时用 delayMult。")
 	} else {
-		fmt.Fprintf(&b, "- 导出倍率：%d×，位图导出时按此放大\n", exportScale)
-		b.WriteString("- 动图的 dur 按上面的帧率与倍速换算：单帧时长 ≈ 1 / (帧率 × 倍速) 秒。")
+		b.WriteString("- 动图的 dur 只按帧率换算：单帧时长 ≈ 1 / 帧率 秒。")
 	}
 	return b.String()
 }

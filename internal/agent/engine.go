@@ -279,8 +279,8 @@ func (e *Engine) run(ctx context.Context, t Task) (Stats, error) {
 		if extra := strings.TrimSpace(t.System); extra != "" {
 			system += "\n\n" + extra
 		}
-		// 左栏播放设置（帧率上限 / 倍速 / 导出倍率）随提示词下发，模型据此安排帧数与停顿。
-		system += "\n\n" + playbackNote(e.deps.Settings, e.deps.ExportScale, true)
+		// 左栏生成帧率随提示词下发，模型据此安排帧数与节奏。
+		system += "\n\n" + playbackNote(e.deps.Settings, true)
 		assets, err := e.pixelAssetMessage(pixelInput)
 		if err != nil {
 			e.saveHistory(t.History)
@@ -317,8 +317,8 @@ func (e *Engine) run(ctx context.Context, t Task) (Stats, error) {
 		if e.deps.ContextClearedAt > 0 && e.deps.LayerTools {
 			system += "\n\n" + contextClearedNote()
 		}
-		// 播放设置同样对 SVG 动图可见：帧率上限与倍速决定 <animate> 的 dur 取值。
-		system += "\n\n" + playbackNote(e.deps.Settings, e.deps.ExportScale, false)
+		// 生成帧率同样对 SVG 动图可见：它决定 <animate> 的 dur 取值。
+		system += "\n\n" + playbackNote(e.deps.Settings, false)
 		msgs = buildInitialMessages(t)
 	}
 	// 连续对话：把上一轮结束时的完整历史拼在本次输入之前（浅拷贝，运行期只 append）。

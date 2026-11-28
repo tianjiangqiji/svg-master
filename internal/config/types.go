@@ -246,25 +246,21 @@ type AgentSettings struct {
 	// MultiStep 是 GenMode 的派生值（layers 时为 true），保留给旧配置与旧代码读取。
 	// 写入时由 NormalizeGenMode 统一回填，不要单独设置它。
 	MultiStep bool `json:"multiStep"`
-	// MaxFPS 帧率上限（左栏滑块），动画播放与 GIF 导出都不越过它。
+	// MaxFPS 生成帧率（左栏唯一的播放设置滑块）：会随提示词下发给模型，
+	// 画布上的展示帧率默认跟随它，用户可在画布工具条单独调整，输出帧率以展示帧率为准。
 	MaxFPS int `json:"maxFps"`
-	// PlaySpeed 播放倍速（左栏滑块），预览与 GIF 导出共用。
-	PlaySpeed float64 `json:"playSpeed"`
 }
 
-// 播放设置（左栏滑块）的取值范围与默认值。
+// 生成帧率的取值范围与默认值。
 const (
-	DefaultMaxFPS    = 8
-	MinMaxFPS        = 1
-	MaxMaxFPS        = 30
-	DefaultPlaySpeed = 1.0
-	MinPlaySpeed     = 0.25
-	MaxPlaySpeed     = 4.0
-	// MaxExportScale PNG 导出倍率上限（与前端滑块 1–16 对齐）。
+	DefaultMaxFPS = 8
+	MinMaxFPS     = 1
+	MaxMaxFPS     = 30
+	// MaxExportScale 位图导出倍率硬上限（前端已固定 2× 再按画布尺寸封顶，这里只做归一上限）。
 	MaxExportScale = 16
 )
 
-// NormalizePlayback 把帧率上限与倍速归一到合法区间，返回归一后的副本。
+// NormalizePlayback 把生成帧率归一到合法区间，返回归一后的副本。
 // 0 值视为未设置，回落到默认值，避免旧配置被清零。
 func NormalizePlayback(a AgentSettings) AgentSettings {
 	if a.MaxFPS == 0 {
@@ -275,15 +271,6 @@ func NormalizePlayback(a AgentSettings) AgentSettings {
 	}
 	if a.MaxFPS > MaxMaxFPS {
 		a.MaxFPS = MaxMaxFPS
-	}
-	if a.PlaySpeed == 0 {
-		a.PlaySpeed = DefaultPlaySpeed
-	}
-	if a.PlaySpeed < MinPlaySpeed {
-		a.PlaySpeed = MinPlaySpeed
-	}
-	if a.PlaySpeed > MaxPlaySpeed {
-		a.PlaySpeed = MaxPlaySpeed
 	}
 	return a
 }
@@ -373,7 +360,6 @@ func DefaultSettings() Settings {
 			GIF:        false,
 			MultiStep:  true,
 			MaxFPS:     DefaultMaxFPS,
-			PlaySpeed:  DefaultPlaySpeed,
 		},
 		Layers: LayerSettings{Enabled: true, PanelHeight: 220},
 		Project: ProjectSettings{

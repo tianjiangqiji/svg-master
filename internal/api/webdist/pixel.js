@@ -169,20 +169,11 @@
     };
     const listen = (id, event, handler) => $(id).addEventListener(event, handler);
     const click = (id, handler) => listen(id, 'click', handler);
-    // 左栏共享播放设置（帧率上限 / 倍速 / 导出倍率）：滑块值同时进入提示词，模型可见。
-    const readRange = (id, fallback, low, high) => {
-      const node = $(id);
-      const value = node ? Number(node.value) : NaN;
-      return Number.isFinite(value) ? clamp(value, low, high) : fallback;
-    };
-    const maxFPS = () => Math.round(readRange('maxFps', 30, 1, 30));
-    const playSpeed = () => readRange('playSpeed', 1, 0.25, 4);
-    const exportScale = () => Math.round(readRange('exportScale', 2, 1, 16));
-    // 实际导出倍率：共享滑块值再按画布尺寸封顶，避免一次性申请超大画布。
+    // 导出倍率固定为 2×，再按画布尺寸封顶，避免一次性申请超大画布。
     const effectiveScale = () => {
       const animated = isAnimated();
       const longest = Math.max(1, boardWidth, boardHeight);
-      let scale = clamp(exportScale(), 1, animated ? 8 : 16);
+      let scale = clamp(2, 1, animated ? 8 : 16);
       scale = Math.min(scale, Math.max(1, Math.floor((animated ? 640 : 8192) / longest)));
       if (!animated) {
         const areaCap = Math.floor(Math.sqrt((64 * 1024 * 1024) / (boardWidth * boardHeight || 1)));
@@ -248,12 +239,6 @@
       } else $('pixelAnimBar')?.classList.toggle('hidden', !animated);
       $('pixelAnimPlay').disabled = !animated || running || busy || loading || !visibleFrames().length;
       $('pixelAnimFPS').disabled = $('pixelAnimLoop').disabled = !editable;
-      // 帧率上限由左栏滑块决定，上限调小后旧值不能越界。
-      $('pixelAnimFPS').max = String(maxFPS());
-      if (Number($('pixelAnimFPS').value) > maxFPS()) {
-        $('pixelAnimFPS').value = String(maxFPS());
-        paintFPSLabel(maxFPS());
-      }
       $('pixelAnimOnion').disabled = !animated || playing || running;
       const delayInput = $('pixelFrameDelay');
       if (delayInput) {
@@ -440,8 +425,8 @@
       const frame = order[index];
       if (!playing || !frame) return stopPlayback();
       const { fps, loop } = animation();
-      // 本地预览与 GIF 导出共用同一组帧率上限与倍速。
-      const rate = clamp(fps, 1, maxFPS()) * playSpeed();
+      // 展示帧率（=输出帧率），范围 1..30。
+      const rate = clamp(fps, 1, 30);
       playbackTimer = setTimeout(() => {
         if (index + 1 >= order.length && !loop) { stopPlayback(true); return; }
         playbackID = order[(index + 1) % order.length].id;
@@ -1585,7 +1570,8 @@
           if (!rasterImage(raster) || raster.failed) throw new Error('无法读取帧「' + frame.name + '」');
           context.clearRect(0, 0, width, height);
           context.drawImage(rasterImage(raster), 0, 0, width, height);
-          const delay = Math.max(2, Math.round(100 / (clamp(fps, 1, maxFPS()) * playSpeed())) * (frame.delayMult || 1));
+          // 导出按作品帧率算停留，范围 1..30。
+          const delay = Math.max(2, Math.round(100 / clamp(fps, 1, 30)) * (frame.delayMult || 1));
           encoder.addFrame(context.getImageData(0, 0, width, height).data, delay);
         }
         await new Promise((resolve) => setTimeout(resolve, 0));
@@ -1747,7 +1733,7 @@
     listen('pixelAnimFPS', 'change', (event) => {
       const anim = animation();
       const fps = Math.round(Number(event.target.value));
-      if (!anim || !Number.isInteger(fps) || fps < 1 || fps > maxFPS()) {
+      if (!anim || !Number.isInteger(fps) || fps < 1 || fps > 30) {
         event.target.value = String(anim?.fps || 8);
         paintFPSLabel(event.target.value);
         return;

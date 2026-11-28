@@ -616,7 +616,7 @@ input[type=checkbox]{accent-color:var(--accent);width:13px;height:13px;margin:0;
 .anim-fps b{min-width:20px;text-align:right;color:var(--text);font-variant-numeric:tabular-nums}
 .anim-fps input[type=range]{width:96px}
 
-/* 通用滑块：帧率 / 倍速 / 导出倍率共用，去掉数字输入框的箭头感 */
+/* 通用滑块：帧率滑块共用，去掉数字输入框的箭头感 */
 input[type=range].slider,
 .anim-settings input[type=range],
 .pixel-timeline-toolbar input[type=range]{
@@ -646,7 +646,7 @@ input[type=range].slider:focus-visible,
 .anim-settings input[type=range]:focus-visible,
 .pixel-timeline-toolbar input[type=range]:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}
 
-/* 左栏播放设置：帧率 / 倍速 / 导出倍率 三个滑块 */
+/* 左栏生成帧率滑块 */
 .anim-settings{display:grid;gap:6px;padding:7px 8px;margin-top:2px;border:1px solid var(--border);border-radius:var(--radius);background:var(--panel2)}
 .anim-settings .anim-field{display:grid;gap:3px;font-size:11px;color:var(--muted)}
 .anim-settings .anim-field>span{display:flex;align-items:baseline;justify-content:space-between;gap:6px}

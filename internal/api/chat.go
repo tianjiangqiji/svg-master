@@ -279,7 +279,6 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		ContextClearedAt: proj.ContextClearedAt(),
 		Pixel:            pixelBridge,
 		Vision:           caps.Vision,
-		ExportScale:      st.Export.Scale,
 	})
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush() // 注册后立即发送响应头，停止不必等模型产生首条事件。

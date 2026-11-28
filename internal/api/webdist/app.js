@@ -699,11 +699,8 @@
     $('streamOff').checked = !!st.agent?.streamDisabled;
     $('compressAt').value = st.agent?.compressAt || 75;
     $('compressAtLabel').textContent = ($('compressAt').value) + '%';
-    // 播放设置：帧率上限 / 倍速 / 导出倍率，左栏滑块是唯一入口（右上角不再重复）
-    st.export = st.export || {};
+    // 生成帧率：左栏唯一一项，随提示词下发给模型（展示帧率在画布工具条单独调，默认跟随它）
     if ($('maxFps')) $('maxFps').value = String(clamp(parseInt(st.agent?.maxFps, 10) || 8, 1, 30));
-    if ($('playSpeed')) $('playSpeed').value = String(clamp(parseFloat(st.agent?.playSpeed) || 1, 0.25, 4));
-    if ($('exportScale')) $('exportScale').value = String(clamp(parseInt(st.export.scale, 10) || 2, 1, 16));
     paintAnimSettingLabels();
     // 生成方式：genMode 是唯一真源；老设置只有 multiStep 时按它推断一次并回写。
     st.agent = st.agent || {};
@@ -945,10 +942,7 @@
       st.agent.genMode = S.genMode;
       st.agent.multiStep = S.genMode === 'layers';
       st.agent.maxFps = clamp(parseInt($('maxFps')?.value, 10) || st.agent.maxFps || 8, 1, 30);
-      st.agent.playSpeed = clamp(parseFloat($('playSpeed')?.value) || st.agent.playSpeed || 1, 0.25, 4);
     }
-    st.export = st.export || {};
-    st.export.scale = clamp(parseInt($('exportScale')?.value, 10) || st.export.scale || 2, 1, 16);
     st.workspace = S.genMode === 'pixel' ? 'pixel' : 'svg';
     st.layers = st.layers || {};
     // 三档下图层文件都在，图层面板始终可用；multiStep 只表示「多图层模式」。
@@ -1002,35 +996,20 @@
     persist();
   });
 
-  // ── 播放设置（左栏滑块：帧率上限 / 倍速 / 导出倍率）──────────
-  // 拖动时只更新标签与上限，松手（change）才落盘，免得一次拖动打满 PUT。
+  // ── 生成帧率（左栏唯一一项，随提示词下发给模型）──────────
+  // 拖动时只更新标签，松手（change）才落盘，免得一次拖动打满 PUT。
   function animSettings() {
-    const st = S.settings || {};
-    const ag = st.agent || {};
-    const ex = st.export || {};
-    return {
-      maxFps: clamp(parseInt(ag.maxFps, 10) || 8, 1, 30),
-      playSpeed: clamp(parseFloat(ag.playSpeed) || 1, 0.25, 4),
-      exportScale: clamp(parseInt(ex.scale, 10) || 2, 1, 16),
-    };
+    const ag = (S.settings && S.settings.agent) || {};
+    return { genFps: clamp(parseInt(ag.maxFps, 10) || 8, 1, 30) };
   }
   function paintAnimSettingLabels() {
-    const a = animSettings();
-    if ($('maxFpsLabel')) $('maxFpsLabel').textContent = String(a.maxFps);
-    if ($('playSpeedLabel')) $('playSpeedLabel').textContent = a.playSpeed + '×';
-    if ($('exportScaleLabel')) $('exportScaleLabel').textContent = a.exportScale + '×';
-    // 帧率滑块的上限跟着最大帧率走：动画条与像素时间轴一起收紧
-    ['animFps', 'pixelAnimFPS'].forEach((id) => {
-      const node = $(id);
-      if (!node) return;
-      node.max = String(a.maxFps);
-      const v = parseInt(node.value, 10);
-      if (Number.isFinite(v) && v > a.maxFps) node.value = String(a.maxFps);
-    });
-    if (S.anim.fps > a.maxFps) {
-      S.anim.fps = a.maxFps;
-      if ($('animFps')) $('animFps').value = String(a.maxFps);
-      if ($('animFpsLabel')) $('animFpsLabel').textContent = String(a.maxFps);
+    const gen = animSettings().genFps;
+    if ($('maxFpsLabel')) $('maxFpsLabel').textContent = String(gen);
+    // 展示帧率默认跟随生成帧率：用户没在画布工具条手动调过时（userFps=false），跟着生成帧率走。
+    if (!S.anim.userFps && S.anim.fps !== gen) {
+      S.anim.fps = gen;
+      if ($('animFps')) $('animFps').value = String(gen);
+      if ($('animFpsLabel')) $('animFpsLabel').textContent = String(gen);
       if (S.anim.playing) { animStop(); animPlay(); }
     }
   }
@@ -1038,29 +1017,24 @@
     const st = S.settings;
     if (!st) return;
     st.agent = st.agent || {};
-    st.export = st.export || {};
     if (key === 'maxFps') st.agent.maxFps = clamp(value, 1, 30);
-    else if (key === 'playSpeed') st.agent.playSpeed = clamp(value, 0.25, 4);
-    else if (key === 'exportScale') st.export.scale = clamp(value, 1, 16);
     paintAnimSettingLabels();
-    if (key === 'playSpeed' && S.anim.playing) { animStop(); animPlay(); }
     persist();
   }
-  ['maxFps', 'playSpeed', 'exportScale'].forEach((id) => {
+  ['maxFps'].forEach((id) => {
     const node = $(id);
     if (!node) return;
     node.addEventListener('input', () => {
-      const v = parseFloat(node.value);
-      if (id === 'maxFps') {
-        if ($('maxFpsLabel')) $('maxFpsLabel').textContent = String(v);
-        paintAnimSettingLabels();
-      } else if (id === 'playSpeed' && $('playSpeedLabel')) {
-        $('playSpeedLabel').textContent = v + '×';
-      } else if (id === 'exportScale' && $('exportScaleLabel')) {
-        $('exportScaleLabel').textContent = v + '×';
+      const v = Math.round(parseFloat(node.value));
+      if ($('maxFpsLabel')) $('maxFpsLabel').textContent = String(v);
+      // 未手动调过展示帧率时，实时跟随生成帧率
+      if (!S.anim.userFps) {
+        S.anim.fps = v;
+        if ($('animFps')) $('animFps').value = String(v);
+        if ($('animFpsLabel')) $('animFpsLabel').textContent = String(v);
       }
     });
-    node.addEventListener('change', () => applyAnimSetting(id, parseFloat(node.value)));
+    node.addEventListener('change', () => applyAnimSetting(id, Math.round(parseFloat(node.value))));
   });
 
   // ── 画布比例 ────────────────────────────────────────────
@@ -2348,7 +2322,7 @@
 
   function animFpsFromRoot(root) {
     const v = parseFloat(root && root.getAttribute('data-fps'));
-    return Number.isFinite(v) && v > 0 ? clamp(Math.round(v), 1, 30) : 8;
+    return Number.isFinite(v) && v > 0 ? clamp(Math.round(v), 1, 30) : animSettings().genFps;
   }
 
   // animGroups 取根下的帧分组，按 data-frame 的数值排序。
@@ -2377,7 +2351,7 @@
     a.frames = 0;
     a.index = 0;
     a.source = root.querySelector(ANIM_TAGS) ? 'smil' : 'static';
-    if (!a.userFps) a.fps = 8;
+    if (!a.userFps) a.fps = animSettings().genFps;
   }
 
   // 帧分组由播放器统一控制显隐。生成的 SVG 可能同时用 SMIL 切换
@@ -2440,8 +2414,7 @@
     const a = S.anim;
     const fps = $('animFps');
     if (fps) {
-      const cap = animSettings().maxFps;
-      if (a.fps > cap) a.fps = cap;
+      if (a.fps > 30) a.fps = 30;
       if (String(fps.value) !== String(a.fps)) fps.value = String(a.fps);
       if ($('animFpsLabel')) $('animFpsLabel').textContent = String(a.fps);
     }
@@ -2475,7 +2448,7 @@
         animShowFrame(r, a.index);
         const pos = $('animPos');
         if (pos && !a.busy) pos.textContent = animPos();
-      }, Math.round(1000 / (clamp(a.fps, 1, animSettings().maxFps) * animSettings().playSpeed)));
+      }, Math.round(1000 / clamp(a.fps, 1, 30)));
       a.playing = true;
     } else if (a.source === 'smil') {
       if (typeof root.unpauseAnimations === 'function') root.unpauseAnimations();
@@ -2860,10 +2833,9 @@
       const source = a.source;
       const frames = a.frames;
       const size = animTargetSize();
-      // 帧率受左栏「最大帧率」约束，倍速同时作用于播放与导出的每帧停留
-      const speed = animSettings().playSpeed;
-      const fps = clamp(a.fps, 1, animSettings().maxFps);
-      const delayCs = Math.max(2, Math.round(100 / (fps * speed)));
+      // 导出帧率取画布工具条上的展示帧率（也就是输出帧率），范围 1..30。
+      const fps = clamp(a.fps, 1, 30);
+      const delayCs = Math.max(2, Math.round(100 / fps));
       const enc = new window.GIFEncoder(size.w, size.h, { loop: 0 });
       let made = 0;
 
@@ -2879,7 +2851,7 @@
       } else if (source === 'smil') {
         const root = animRoot();
         const dur = root ? smilDuration(root) : 2;
-        const step = Math.max(0.25, fps * speed);
+        const step = Math.max(0.25, fps);
         const total = clamp(Math.round(dur * step), 2, 48);
         for (let i = 0; i < total; i++) {
           const pos = $('animPos');
@@ -2918,17 +2890,15 @@
   $('btnAnimPlay')?.addEventListener('click', animToggle);
   // 拖动实时生效（标签 + 播放间隔），松手才做一次完整同步
   $('animFps')?.addEventListener('input', () => {
-    const cap = animSettings().maxFps;
     const v = parseInt($('animFps').value, 10);
-    S.anim.fps = Number.isFinite(v) ? clamp(v, 1, cap) : 8;
+    S.anim.fps = Number.isFinite(v) ? clamp(v, 1, 30) : animSettings().genFps;
     S.anim.userFps = true;
     if ($('animFpsLabel')) $('animFpsLabel').textContent = String(S.anim.fps);
     if (S.anim.playing) { animStop(); animPlay(); }
   });
   $('animFps')?.addEventListener('change', () => {
-    const cap = animSettings().maxFps;
     const v = parseInt($('animFps').value, 10);
-    S.anim.fps = Number.isFinite(v) ? clamp(v, 1, cap) : 8;
+    S.anim.fps = Number.isFinite(v) ? clamp(v, 1, 30) : animSettings().genFps;
     S.anim.userFps = true;
     $('animFps').value = String(S.anim.fps);
     if ($('animFpsLabel')) $('animFpsLabel').textContent = String(S.anim.fps);

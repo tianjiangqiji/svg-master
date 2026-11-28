@@ -55,7 +55,7 @@
       <!-- 动图模式才出现：导出 GIF 挂在保存按钮旁边（右上角），非动图模式隐藏 -->
       <button class="btn hidden" id="btnGif" type="button" data-svg-only title="把当前动图导出为 GIF">导出 GIF</button>
       <button class="btn primary" id="btnSave" type="button" data-svg-only>保存 SVG</button>
-      <button class="btn" id="pixelExportPNG" type="button" data-pixel-only title="导出 PNG，倍率与最大帧率在左栏设置">导出 PNG</button>
+      <button class="btn" id="pixelExportPNG" type="button" data-pixel-only title="按画布尺寸自动选择导出倍率">导出 PNG</button>
       <button class="btn" id="pixelExportSVG" type="button" data-pixel-only title="导出保持硬边缘的 SVG">导出 SVG</button>
       <button class="btn hidden" id="pixelExportGIF" type="button" data-pixel-only>导出 GIF</button>
       <button class="btn primary" id="pixelSave" type="button" data-pixel-only>保存工程</button>
@@ -91,21 +91,12 @@
                 <span>GIF 动图</span>
               </label>
             </div>
-            <!-- 播放设置：只保留这一处，右上角不再重复出现倍速控件 -->
+            <!-- 生成帧率：左栏唯一一项，随提示词下发给模型；画布上的展示（=输出）帧率默认跟随它，可再单独调整 -->
             <div class="anim-settings hidden" id="animSettings">
-              <label class="anim-field" title="每秒播放多少帧">
-                <span>帧率 <b class="anim-val" id="maxFpsLabel">8</b> fps</span>
+              <label class="anim-field" title="告诉模型动画按多少帧设计；画布工具条上的展示帧率默认跟随它，也可在那里单独调整">
+                <span>生成帧率 <b class="anim-val" id="maxFpsLabel">8</b> fps</span>
                 <input id="maxFps" type="range" min="1" max="30" step="1" value="8" />
               </label>
-              <label class="anim-field" title="播放与导出 GIF 共用的速度倍数">
-                <span>倍速 <b class="anim-val" id="playSpeedLabel">1×</b></span>
-                <input id="playSpeed" type="range" min="0.25" max="4" step="0.25" value="1" />
-              </label>
-              <label class="anim-field" title="PNG 导出与 AI 取样的放大倍数">
-                <span>导出倍率 <b class="anim-val" id="exportScaleLabel">2×</b></span>
-                <input id="exportScale" type="range" min="1" max="16" step="1" value="2" />
-              </label>
-              <small class="anim-hint" id="animHint">帧率、倍速与导出倍率会随提示词一起发给模型。</small>
             </div>
             <div class="gen-hint" id="genHint"></div>
           </div>
@@ -300,13 +291,13 @@
               <button class="btn sm icon" id="pixelAnimNext" type="button" aria-label="下一帧" title="下一帧">→</button>
               <span class="mono pixel-frame-position" id="pixelAnimPosition">1 / 1</span>
             </div>
-            <label class="timeline-range" title="每秒播放帧数">帧率 <b class="timeline-val" id="pixelAnimFPSLabel">8</b>
+            <label class="timeline-range" title="展示帧率：决定导出 GIF 的帧率，默认跟随左栏生成帧率，可单独调整">展示帧率 <b class="timeline-val" id="pixelAnimFPSLabel">8</b>
               <input id="pixelAnimFPS" aria-label="帧率" type="range" min="1" max="30" step="1" value="8" />
             </label>
             <label class="chk"><input id="pixelAnimLoop" type="checkbox" checked /><span>循环</span></label>
             <label class="chk"><input id="pixelAnimOnion" type="checkbox" /><span>洋葱皮</span></label>
-            <label class="timeline-range" title="当前帧停留时长倍数（倍速）">倍速 <b class="timeline-val" id="pixelFrameDelayLabel">1×</b>
-              <input id="pixelFrameDelay" aria-label="当前帧时长倍数" type="range" min="1" max="8" step="1" value="1" />
+            <label class="timeline-range" title="当前帧停留时长（相对其它帧）">停留 <b class="timeline-val" id="pixelFrameDelayLabel">1×</b>
+              <input id="pixelFrameDelay" aria-label="当前帧停留时长倍数" type="range" min="1" max="8" step="1" value="1" />
             </label>
             <div class="spacer"></div>
             <div class="pixel-frame-actions" role="toolbar" aria-label="帧编辑">
@@ -337,7 +328,7 @@
 
         <div class="anim-bar hidden" id="animBar">
           <button class="btn sm" id="btnAnimPlay" type="button" title="播放 / 暂停">▶</button>
-          <label class="anim-fps" title="帧率（每秒帧数）">帧率 <b id="animFpsLabel">8</b>
+          <label class="anim-fps" title="展示帧率：决定导出 GIF 的帧率，默认跟随左栏生成帧率，可在此单独调整">展示帧率 <b id="animFpsLabel">8</b>
             <input type="range" id="animFps" min="1" max="30" step="1" value="8" />
           </label>
           <span class="anim-pos mono" id="animPos">—</span>
