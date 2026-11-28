@@ -207,13 +207,13 @@ html[data-workspace="pixel"][data-pixel-mode="anim"] #layerBlock{display:none}
 .pixel-transport,.pixel-frame-actions{display:flex;align-items:center;gap:4px;white-space:nowrap}
 .pixel-frame-position{min-width:38px;text-align:center;color:var(--text2)}
 .pixel-timeline-frames{display:flex;align-items:stretch;gap:5px;min-height:70px;overflow-x:auto;overflow-y:hidden;padding:1px 1px 4px;scroll-behavior:smooth}
-.pixel-timeline-frame{position:relative;display:grid;grid-template-rows:14px 40px 12px 12px;justify-items:center;align-items:center;gap:1px;flex:0 0 62px;width:62px;min-height:84px;padding:3px;border:1px solid var(--border);border-radius:var(--radius);background:var(--field);color:var(--muted);cursor:pointer;font-size:10px;line-height:1}
+.pixel-timeline-frame{position:relative;display:grid;grid-template-rows:14px 40px 12px;justify-items:center;align-items:center;gap:1px;flex:0 0 62px;width:62px;min-height:84px;padding:3px;border:1px solid var(--border);border-radius:var(--radius);background:var(--field);color:var(--muted);cursor:pointer;font-size:10px;line-height:1}
 .pixel-timeline-frame:hover{border-color:var(--border2);background:var(--field-hover);color:var(--text)}
 .pixel-timeline-frame.active{border-color:var(--accent);background:var(--accent-soft);color:var(--text);box-shadow:inset 0 0 0 1px var(--accent-dim)}
 .pixel-timeline-frame.playing{outline:1px solid var(--ok);outline-offset:1px}
 .pixel-timeline-frame.is-hidden{opacity:.48}
 .pixel-timeline-thumb{display:block;max-width:40px;max-height:40px;image-rendering:pixelated;background:var(--svg-bg);border:1px solid var(--border)}
-.pixel-timeline-index,.pixel-timeline-delay,.pixel-timeline-state{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pixel-timeline-index,.pixel-timeline-state{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pixel-timeline-state{min-height:10px;color:var(--text2)}
 .pixel-timeline-frame:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 .pixel-timeline-frame:disabled{opacity:.45;cursor:not-allowed}

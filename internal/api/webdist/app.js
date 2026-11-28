@@ -3015,7 +3015,9 @@
     }
     const list = countable.slice().sort((a, b) => animated ? a.index - b.index : b.index - a.index);
     if (!list.length) box.appendChild(el('div', 'flow-empty', '（没有' + subject + '）'));
-    $('layerMeta').textContent = isPixel() ? `${list.length} / ${pixel.layerLimit} ${animated ? '帧' : '层'}` : `${list.length} 层`;
+    const limit = isPixel() ? pixel.layerLimit : 0;
+    const limitTxt = Number.isFinite(limit) ? ` / ${limit}` : '';
+    $('layerMeta').textContent = isPixel() ? `${list.length}${limitTxt} ${animated ? '帧' : '层'}` : `${list.length} 层`;
     const activeName = activeLayer?.name || '—';
     $('layerActive').textContent = `当前：${activeName}`;
 

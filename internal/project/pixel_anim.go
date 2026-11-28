@@ -17,7 +17,6 @@ import (
 const (
 	PixelModeStatic = "static"
 	PixelModeAnim   = "anim"
-	MaxAnimFrames   = 32
 )
 
 var (
@@ -136,8 +135,8 @@ func samePixelAnimation(a, b *PixelAnimMeta) bool {
 
 func checkPixelAnim(f File) error {
 	anim := f.Pixel.Anim
-	if len(f.Layers) != 0 || f.ActiveLayer != "" || anim == nil || len(anim.Frames) == 0 || len(anim.Frames) > MaxAnimFrames {
-		return fmt.Errorf("像素动图需要 1 至 %d 帧且不能包含静态图层", MaxAnimFrames)
+	if len(f.Layers) != 0 || f.ActiveLayer != "" || anim == nil || len(anim.Frames) == 0 {
+		return errors.New("像素动图至少需要 1 帧且不能包含静态图层")
 	}
 	if anim.FPS < 1 || anim.FPS > 30 {
 		return errors.New("帧率必须在 1 到 30 之间")
@@ -501,9 +500,6 @@ func (p *Project) quantizePixelFrameLocked(f File, name string, img *image.NRGBA
 
 func (p *Project) addFrameLocked(f File, op PixelFrameOp, ai bool) (PixelFrame, error) {
 	anim := f.Pixel.Anim
-	if len(anim.Frames) >= MaxAnimFrames {
-		return PixelFrame{}, fmt.Errorf("像素动图最多支持 %d 帧", MaxAnimFrames)
-	}
 	frame := newPixelFrame(op.Name, len(anim.Frames))
 	index := len(anim.Frames) + 1
 	var resources map[string][]byte

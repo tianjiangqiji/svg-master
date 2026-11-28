@@ -18,7 +18,7 @@
   const partialUploadBytes = 2 * 1024 * 1024;
   const maxCanvasSize = 2048;
   const maxAnimationSize = 512;
-  const maxFrameCount = 32;
+  const maxFrameCount = Infinity; // 帧数不设硬上限
   const minZoom = 0.125;
   const maxZoom = 64;
   const $ = (id) => document.getElementById(id);
@@ -185,10 +185,6 @@
       const label = $('pixelAnimFPSLabel');
       if (label) label.textContent = String(Math.round(Number(value) || 8));
     };
-    const paintDelayLabel = (value) => {
-      const label = $('pixelFrameDelayLabel');
-      if (label) label.textContent = Math.round(Number(value) || 1) + '×';
-    };
     const encodeColor = (id) => '#' + $(id).value.slice(1, 7);
     const loadResult = (result, options) => {
       if (result?.project) applyProject(result.project, options);
@@ -240,14 +236,6 @@
       $('pixelAnimPlay').disabled = !animated || running || busy || loading || !visibleFrames().length;
       $('pixelAnimFPS').disabled = $('pixelAnimLoop').disabled = !editable;
       $('pixelAnimOnion').disabled = !animated || playing || running;
-      const delayInput = $('pixelFrameDelay');
-      if (delayInput) {
-        delayInput.disabled = !editable || !animated || !activeID;
-        if (document.activeElement !== delayInput) {
-          delayInput.value = layerMetadata()?.delayMult || 1;
-          paintDelayLabel(delayInput.value);
-        }
-      }
       const play = $('pixelAnimPlay');
       play.textContent = playing ? '❚❚' : '▶';
       play.setAttribute('aria-label', playing ? '暂停' : '播放');
@@ -357,13 +345,11 @@
           const thumb = document.createElement('canvas');
           thumb.className = 'pixel-timeline-thumb';
           thumb.style.imageRendering = 'pixelated';
-          const delayLabel = document.createElement('span');
-          delayLabel.className = 'pixel-timeline-delay';
           const stateLabel = document.createElement('span');
           stateLabel.className = 'pixel-timeline-state';
-          button.append(indexLabel, thumb, delayLabel, stateLabel);
+          button.append(indexLabel, thumb, stateLabel);
           button.addEventListener('click', () => selectFrame(id));
-          card = { button, indexLabel, thumb, delayLabel, stateLabel, key: '', raster: null, rasterVersion: -1, boardKey: '' };
+          card = { button, indexLabel, thumb, stateLabel, key: '', raster: null, rasterVersion: -1, boardKey: '' };
           timelineCards.set(id, card);
         }
         const visible = visibleForPreview(frame);
@@ -371,10 +357,9 @@
         if (card.key !== key) {
           card.key = key;
           card.indexLabel.textContent = String(position + 1);
-          card.delayLabel.textContent = '×' + (frame.delayMult || 1);
           card.button.classList.toggle('is-hidden', !visible);
           card.button.title = '帧 ' + (position + 1) + (frame.name ? ' · ' + frame.name : '')
-            + ' · 时长 ×' + (frame.delayMult || 1) + (visible ? '' : ' · 已隐藏') + (frame.locked ? ' · 已锁定' : '');
+            + (visible ? '' : ' · 已隐藏') + (frame.locked ? ' · 已锁定' : '');
           card.button.setAttribute('aria-label', card.button.title);
         }
         const isActive = frame.id === activeID;
@@ -433,7 +418,7 @@
         updateControls();
         schedulePaint();
         scheduleNextFrame();
-      }, 1000 / rate * (frame.delayMult || 1));
+      }, 1000 / rate);
     }
 
     function stopPlayback(hold = false) {
@@ -1571,7 +1556,7 @@
           context.clearRect(0, 0, width, height);
           context.drawImage(rasterImage(raster), 0, 0, width, height);
           // 导出按作品帧率算停留，范围 1..30。
-          const delay = Math.max(2, Math.round(100 / clamp(fps, 1, 30)) * (frame.delayMult || 1));
+          const delay = Math.max(2, Math.round(100 / clamp(fps, 1, 30)));
           encoder.addFrame(context.getImageData(0, 0, width, height).data, delay);
         }
         await new Promise((resolve) => setTimeout(resolve, 0));
@@ -1741,18 +1726,6 @@
       mutate('/api/pixel/frames', { action: 'fps', fps });
     });
     listen('pixelAnimLoop', 'change', (event) => mutate('/api/pixel/frames', { action: 'loop', loop: event.target.checked }));
-    listen('pixelFrameDelay', 'input', (event) => paintDelayLabel(event.target.value));
-    listen('pixelFrameDelay', 'change', (event) => {
-      const frame = layerMetadata();
-      const delayMult = Math.round(Number(event.target.value));
-      if (!frame || !isAnimated()) return;
-      if (!Number.isInteger(delayMult) || delayMult < 1 || delayMult > 8) {
-        event.target.value = String(frame.delayMult || 1);
-        paintDelayLabel(event.target.value);
-        return;
-      }
-      mutate('/api/pixel/frames', { action: 'delayMult', frameId: frame.id, delayMult });
-    });
     const timelineClick = (id, handler) => { const node = $(id); if (node) node.addEventListener('click', handler); };
     timelineClick('pixelAnimPrev', () => stepFrame(-1));
     timelineClick('pixelAnimNext', () => stepFrame(1));

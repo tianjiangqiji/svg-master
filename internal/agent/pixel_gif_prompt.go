@@ -7,7 +7,7 @@ const pixelGifStaticHint = `
 
 // pixelGifAnimHint 附加在动图系统提示之后：强调循环交付标准，与 GIF 导出对齐。
 const pixelGifAnimHint = `
-【GIF 交付标准】用户明确要求可播放的 GIF 动图：帧序列必须能无限循环——首尾衔接自然，避免突兀跳变；主体动作幅度明确，静止背景保持逐帧一致以避免闪烁；帧数 6–16 帧、8 fps 起步，动作复杂时可到 24 帧；交付前用 filmstrip 检查首尾两帧的衔接，必要时用 delayMult 给关键姿势停顿。`
+【GIF 交付标准】用户明确要求可播放的 GIF 动图：帧序列必须能无限循环——首尾衔接自然，避免突兀跳变；主体动作幅度明确，静止背景保持逐帧一致以避免闪烁；帧数 6–16 帧、8 fps 起步，动作复杂时可到 24 帧；交付前用 filmstrip 检查首尾两帧的衔接。`
 
 // pixelGifStaticPrompt 返回静态形态下的 GIF 附加提示。
 func pixelGifStaticPrompt() string { return pixelGifStaticHint }

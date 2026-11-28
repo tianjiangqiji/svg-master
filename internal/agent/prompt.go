@@ -95,7 +95,7 @@ func playbackNote(a config.AgentSettings, pixel bool) string {
 	b.WriteString("## 动画帧率（用户在左栏用滑块设定）\n")
 	fmt.Fprintf(&b, "- 生成帧率：%d fps，按此设计动画的节奏与帧数\n", a.MaxFPS)
 	if pixel {
-		b.WriteString("- 帧率由用户控制，不要试图用 pixel_frame_op 修改 fps；需要强调节奏时用 delayMult。")
+		b.WriteString("- 帧率由用户控制，不要试图用 pixel_frame_op 修改 fps。")
 	} else {
 		b.WriteString("- 动图的 dur 只按帧率换算：单帧时长 ≈ 1 / 帧率 秒。")
 	}
