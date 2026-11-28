@@ -108,6 +108,8 @@ type Deps struct {
 	LayerTools bool
 	Pixel      PixelBridge
 	Vision     bool
+	// ExportScale PNG / GIF 导出倍率（左栏滑块），随提示词下发给模型。
+	ExportScale int
 	// ContextClearedAt 用户最近一次清空上下文的时间（UnixNano），非 0 时注入提醒，
 	// 要求模型先读图层再动手。
 	ContextClearedAt int64

@@ -169,6 +169,35 @@
     };
     const listen = (id, event, handler) => $(id).addEventListener(event, handler);
     const click = (id, handler) => listen(id, 'click', handler);
+    // 左栏共享播放设置（帧率上限 / 倍速 / 导出倍率）：滑块值同时进入提示词，模型可见。
+    const readRange = (id, fallback, low, high) => {
+      const node = $(id);
+      const value = node ? Number(node.value) : NaN;
+      return Number.isFinite(value) ? clamp(value, low, high) : fallback;
+    };
+    const maxFPS = () => Math.round(readRange('maxFps', 30, 1, 30));
+    const playSpeed = () => readRange('playSpeed', 1, 0.25, 4);
+    const exportScale = () => Math.round(readRange('exportScale', 2, 1, 16));
+    // 实际导出倍率：共享滑块值再按画布尺寸封顶，避免一次性申请超大画布。
+    const effectiveScale = () => {
+      const animated = isAnimated();
+      const longest = Math.max(1, boardWidth, boardHeight);
+      let scale = clamp(exportScale(), 1, animated ? 8 : 16);
+      scale = Math.min(scale, Math.max(1, Math.floor((animated ? 640 : 8192) / longest)));
+      if (!animated) {
+        const areaCap = Math.floor(Math.sqrt((64 * 1024 * 1024) / (boardWidth * boardHeight || 1)));
+        scale = Math.min(scale, Math.max(1, areaCap));
+      }
+      return scale;
+    };
+    const paintFPSLabel = (value) => {
+      const label = $('pixelAnimFPSLabel');
+      if (label) label.textContent = String(Math.round(Number(value) || 8));
+    };
+    const paintDelayLabel = (value) => {
+      const label = $('pixelFrameDelayLabel');
+      if (label) label.textContent = Math.round(Number(value) || 1) + '×';
+    };
     const encodeColor = (id) => '#' + $(id).value.slice(1, 7);
     const loadResult = (result, options) => {
       if (result?.project) applyProject(result.project, options);
@@ -219,24 +248,24 @@
       } else $('pixelAnimBar')?.classList.toggle('hidden', !animated);
       $('pixelAnimPlay').disabled = !animated || running || busy || loading || !visibleFrames().length;
       $('pixelAnimFPS').disabled = $('pixelAnimLoop').disabled = !editable;
+      // 帧率上限由左栏滑块决定，上限调小后旧值不能越界。
+      $('pixelAnimFPS').max = String(maxFPS());
+      if (Number($('pixelAnimFPS').value) > maxFPS()) {
+        $('pixelAnimFPS').value = String(maxFPS());
+        paintFPSLabel(maxFPS());
+      }
       $('pixelAnimOnion').disabled = !animated || playing || running;
       const delayInput = $('pixelFrameDelay');
       if (delayInput) {
         delayInput.disabled = !editable || !animated || !activeID;
-        if (document.activeElement !== delayInput) delayInput.value = layerMetadata()?.delayMult || 1;
+        if (document.activeElement !== delayInput) {
+          delayInput.value = layerMetadata()?.delayMult || 1;
+          paintDelayLabel(delayInput.value);
+        }
       }
       const play = $('pixelAnimPlay');
       play.textContent = playing ? '❚❚' : '▶';
       play.setAttribute('aria-label', playing ? '暂停' : '播放');
-      for (const option of $('pixelExportScale').options) {
-        const scale = parseInt(option.value, 10);
-        const width = boardWidth * scale;
-        const height = boardHeight * scale;
-        option.disabled = animated
-          ? scale > 8 || Math.max(width, height) > 640
-          : Math.max(width, height) > 8192 || width * height > 64 * 1024 * 1024;
-      }
-      if ($('pixelExportScale').selectedOptions[0]?.disabled) $('pixelExportScale').value = '1×';
       renderTimeline();
       if (animated) {
         const shown = playbackID || activeID;
@@ -411,13 +440,15 @@
       const frame = order[index];
       if (!playing || !frame) return stopPlayback();
       const { fps, loop } = animation();
+      // 本地预览与 GIF 导出共用同一组帧率上限与倍速。
+      const rate = clamp(fps, 1, maxFPS()) * playSpeed();
       playbackTimer = setTimeout(() => {
         if (index + 1 >= order.length && !loop) { stopPlayback(true); return; }
         playbackID = order[(index + 1) % order.length].id;
         updateControls();
         schedulePaint();
         scheduleNextFrame();
-      }, 1000 / fps * (frame.delayMult || 1));
+      }, 1000 / rate * (frame.delayMult || 1));
     }
 
     function stopPlayback(hold = false) {
@@ -865,6 +896,7 @@
       }
       if (animation(next)) {
         $('pixelAnimFPS').value = animation(next).fps;
+        paintFPSLabel(animation(next).fps);
         $('pixelAnimLoop').checked = animation(next).loop;
       }
       if (composite.width !== boardWidth || composite.height !== boardHeight) {
@@ -1509,7 +1541,7 @@
       updateControls();
       try {
         await flush();
-        const params = new URLSearchParams(requestWithRevision({ format, scale: parseInt($('pixelExportScale').value, 10) }));
+        const params = new URLSearchParams(requestWithRevision({ format, scale: effectiveScale() }));
         if (isAnimated() && format === 'png') params.set('frameId', playbackID || activeID);
         if (token) params.set('k', token);
         const response = await fetch('/api/pixel/export?' + params);
@@ -1540,7 +1572,7 @@
         await flush();
         const frames = visibleFrames();
         if (!frames.length) throw new Error('请至少显示一帧再导出 GIF');
-        const scale = Math.min(parseInt($('pixelExportScale').value, 10), 640 / Math.max(boardWidth, boardHeight));
+        const scale = effectiveScale();
         const width = Math.max(1, Math.round(boardWidth * scale));
         const height = Math.max(1, Math.round(boardHeight * scale));
         const { fps, loop } = animation();
@@ -1553,7 +1585,7 @@
           if (!rasterImage(raster) || raster.failed) throw new Error('无法读取帧「' + frame.name + '」');
           context.clearRect(0, 0, width, height);
           context.drawImage(rasterImage(raster), 0, 0, width, height);
-          const delay = Math.max(2, Math.round(100 / fps) * (frame.delayMult || 1));
+          const delay = Math.max(2, Math.round(100 / (clamp(fps, 1, maxFPS()) * playSpeed())) * (frame.delayMult || 1));
           encoder.addFrame(context.getImageData(0, 0, width, height).data, delay);
         }
         await new Promise((resolve) => setTimeout(resolve, 0));
@@ -1711,18 +1743,26 @@
     });
     click('pixelAnimPlay', togglePlayback);
     listen('pixelAnimOnion', 'change', () => schedulePaint());
+    listen('pixelAnimFPS', 'input', (event) => paintFPSLabel(event.target.value));
     listen('pixelAnimFPS', 'change', (event) => {
-      const fps = Number(event.target.value);
-      if (!Number.isInteger(fps) || fps < 1 || fps > 30) { event.target.value = animation().fps; return; }
+      const anim = animation();
+      const fps = Math.round(Number(event.target.value));
+      if (!anim || !Number.isInteger(fps) || fps < 1 || fps > maxFPS()) {
+        event.target.value = String(anim?.fps || 8);
+        paintFPSLabel(event.target.value);
+        return;
+      }
       mutate('/api/pixel/frames', { action: 'fps', fps });
     });
     listen('pixelAnimLoop', 'change', (event) => mutate('/api/pixel/frames', { action: 'loop', loop: event.target.checked }));
+    listen('pixelFrameDelay', 'input', (event) => paintDelayLabel(event.target.value));
     listen('pixelFrameDelay', 'change', (event) => {
       const frame = layerMetadata();
-      const delayMult = Number(event.target.value);
+      const delayMult = Math.round(Number(event.target.value));
       if (!frame || !isAnimated()) return;
       if (!Number.isInteger(delayMult) || delayMult < 1 || delayMult > 8) {
-        event.target.value = frame.delayMult || 1;
+        event.target.value = String(frame.delayMult || 1);
+        paintDelayLabel(event.target.value);
         return;
       }
       mutate('/api/pixel/frames', { action: 'delayMult', frameId: frame.id, delayMult });

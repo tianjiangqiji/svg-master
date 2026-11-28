@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"svg-master/internal/config"
@@ -82,6 +83,31 @@ func contextClearedNote() string {
 		"用户刚清空了对话上下文，之前的对话你已看不到，**但画布与图层文件都还在**。\n" +
 		"在动任何东西之前，先用 list_layers 看清工程结构，再 read_layer 读你打算改的图层，" +
 		"并结合作品现有内容判断用户意图；不要假设画布是空的。"
+}
+
+// playbackNote 把左栏的播放设置（帧率上限、倍速、导出倍率）转成一行提示。
+//
+// 这三项都由用户用滑块设定、并随请求落盘，模型必须按它们安排帧数与停顿，
+// 否则交付的动图在用户机器上会被上限截断或播放过快。
+func playbackNote(a config.AgentSettings, exportScale int, pixel bool) string {
+	a = config.NormalizePlayback(a)
+	var b strings.Builder
+	b.WriteString("## 播放设置（用户在左栏用滑块设定）\n")
+	fmt.Fprintf(&b, "- 帧率上限：%d fps，交付的帧率不得超过它\n", a.MaxFPS)
+	fmt.Fprintf(&b, "- 播放倍速：%s×，用户预览与导出共用这一倍数\n", trimFloat(a.PlaySpeed))
+	if pixel {
+		fmt.Fprintf(&b, "- 导出倍率：%d×，导出位图时按此放大（长边受上限约束）\n", exportScale)
+		b.WriteString("- 帧率与倍速由用户控制，不要试图用 pixel_frame_op 修改 fps；需要强调节奏时用 delayMult。")
+	} else {
+		fmt.Fprintf(&b, "- 导出倍率：%d×，位图导出时按此放大\n", exportScale)
+		b.WriteString("- 动图的 dur 按上面的帧率与倍速换算：单帧时长 ≈ 1 / (帧率 × 倍速) 秒。")
+	}
+	return b.String()
+}
+
+// trimFloat 去掉浮点数的多余尾零（1.0 → "1"，0.25 → "0.25"）。
+func trimFloat(v float64) string {
+	return strconv.FormatFloat(v, 'f', -1, 64)
 }
 
 // ratioString 把宽高化简成 "w:h"。

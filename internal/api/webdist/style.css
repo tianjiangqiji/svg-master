@@ -200,6 +200,9 @@ html[data-workspace="pixel"][data-pixel-mode="anim"] #layerBlock{display:none}
 .pixel-timeline-toolbar{display:flex;align-items:center;gap:7px;min-width:0;flex-wrap:wrap;font-size:11px;color:var(--muted)}
 .pixel-timeline-toolbar>label{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
 .pixel-timeline-toolbar input[type=number]{width:44px;min-height:26px;padding:2px 4px;background:var(--field);border:1px solid var(--border);border-radius:4px}
+.pixel-timeline-toolbar .timeline-range{gap:5px}
+.pixel-timeline-toolbar .timeline-range input[type=range]{width:78px;min-height:0}
+.pixel-timeline-toolbar .timeline-val{min-width:20px;text-align:right;font-family:var(--mono);font-size:10.5px;color:var(--text)}
 .pixel-timeline-toolbar .chk{margin:0;min-height:26px;padding:2px 6px;background:transparent}
 .pixel-transport,.pixel-frame-actions{display:flex;align-items:center;gap:4px;white-space:nowrap}
 .pixel-frame-position{min-width:38px;text-align:center;color:var(--text2)}
@@ -609,13 +612,47 @@ input[type=checkbox]{accent-color:var(--accent);width:13px;height:13px;margin:0;
   font-size:11px;color:var(--muted);
 }
 .anim-bar .spacer{flex:1}
-.anim-fps{display:flex;align-items:center;gap:5px;color:var(--muted)}
-.anim-fps input{
-  width:52px;padding:2px 5px;font:inherit;font-size:11px;
-  background:var(--field);border:1px solid var(--border);border-radius:4px;
-  color:var(--text);outline:none;
+.anim-fps{display:flex;align-items:center;gap:6px;color:var(--muted)}
+.anim-fps b{min-width:20px;text-align:right;color:var(--text);font-variant-numeric:tabular-nums}
+.anim-fps input[type=range]{width:96px}
+
+/* 通用滑块：帧率 / 倍速 / 导出倍率共用，去掉数字输入框的箭头感 */
+input[type=range].slider,
+.anim-settings input[type=range],
+.pixel-timeline-toolbar input[type=range]{
+  appearance:none;-webkit-appearance:none;height:16px;padding:0;margin:0;
+  background:transparent;cursor:pointer;
 }
-.anim-fps input:focus{border-color:var(--accent)}
+input[type=range].slider::-webkit-slider-runnable-track,
+.anim-settings input[type=range]::-webkit-slider-runnable-track,
+.pixel-timeline-toolbar input[type=range]::-webkit-slider-runnable-track{
+  height:4px;border-radius:2px;background:var(--track2);border:1px solid var(--border);
+}
+input[type=range].slider::-webkit-slider-thumb,
+.anim-settings input[type=range]::-webkit-slider-thumb,
+.pixel-timeline-toolbar input[type=range]::-webkit-slider-thumb{
+  appearance:none;-webkit-appearance:none;width:11px;height:11px;margin-top:-4px;
+  border-radius:50%;background:var(--accent);border:1px solid var(--accent-dim);cursor:pointer;
+}
+input[type=range].slider::-moz-range-track,
+.anim-settings input[type=range]::-moz-range-track,
+.pixel-timeline-toolbar input[type=range]::-moz-range-track{height:4px;border-radius:2px;background:var(--track2)}
+input[type=range].slider::-moz-range-thumb,
+.anim-settings input[type=range]::-moz-range-thumb,
+.pixel-timeline-toolbar input[type=range]::-moz-range-thumb{
+  width:10px;height:10px;border-radius:50%;background:var(--accent);border:1px solid var(--accent-dim);
+}
+input[type=range].slider:focus-visible,
+.anim-settings input[type=range]:focus-visible,
+.pixel-timeline-toolbar input[type=range]:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}
+
+/* 左栏播放设置：帧率 / 倍速 / 导出倍率 三个滑块 */
+.anim-settings{display:grid;gap:6px;padding:7px 8px;margin-top:2px;border:1px solid var(--border);border-radius:var(--radius);background:var(--panel2)}
+.anim-settings .anim-field{display:grid;gap:3px;font-size:11px;color:var(--muted)}
+.anim-settings .anim-field>span{display:flex;align-items:baseline;justify-content:space-between;gap:6px}
+.anim-settings .anim-val{color:var(--text);font-family:var(--mono);font-size:10.5px}
+.anim-settings input[type=range]{width:100%}
+.anim-settings .anim-hint{font-size:10px;line-height:1.5;color:var(--muted)}
 .anim-pos{min-width:56px;color:var(--text2)}
 #btnAnimPlay{min-width:32px}
 
@@ -995,6 +1032,19 @@ table.caps input[type=checkbox]{margin:0 auto;display:block}
 .fseg-err{border-color:var(--err);background:var(--err-bg)}
 .fseg-err .fseg-head{color:var(--err-fg)}
 .fseg-err .fseg-body{color:var(--err-fg);white-space:pre-wrap}
+.fseg-tool{border-color:var(--border2);background:var(--panel2)}
+.fseg-tool .fseg-head{color:var(--text2);font-family:var(--mono)}
+.fseg-tool .fseg-head .fh-label{display:flex;align-items:center;gap:5px;min-width:0}
+.fseg-tool .fseg-head .fh-label .tool-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fseg-tool .fseg-head .fh-args{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.8;font-size:9px}
+.fseg-tool .fseg-head .fh-badge{flex:0 0 auto;font-size:9px;padding:0 4px;border-radius:3px;border:1px solid var(--border)}
+.fseg-tool .fseg-head .fh-badge.ok{color:var(--ok);border-color:var(--ok)}
+.fseg-tool .fseg-head .fh-badge.run{color:var(--accent);border-color:var(--accent-dim)}
+.fseg-tool .fseg-head .fh-badge.fail{color:var(--err-fg);border-color:var(--err)}
+.fseg-tool .fseg-body{font-family:var(--mono);font-size:10.5px;line-height:1.55;color:var(--text2);max-height:calc(6 * 1.55em + 12px);overflow:auto;white-space:pre-wrap}
+.fseg-tool.folded .fseg-body{display:none}
+.fseg-tool.failed{border-color:var(--err);background:var(--err-bg)}
+.fseg-tool.failed .fseg-body{color:var(--err-fg)}
 .raw-foot{
   display:flex;align-items:center;gap:6px;padding:4px 10px;
   border-top:1px solid var(--border);flex:0 0 auto;
@@ -1141,3 +1191,15 @@ table.caps input[type=checkbox]{margin:0 auto;display:block}
 /* 图层多步开关被锁（画面已有多个图层时不允许关闭） */
 .chk.locked{cursor:not-allowed;opacity:.62}
 .chk.locked:hover{border-color:var(--border);background:var(--field)}
+
+/* 窄窗口：顶栏优先保住全部操作，不把按钮挤出视口。
+   1240px 以下收起品牌文字；1060px 以下允许顶栏换行（高度自适应，画布自然让位）。 */
+@media (max-width:1240px){
+  .brand-text{display:none}
+  .topbar{gap:8px;padding:0 8px}
+  .top-actions{gap:6px}
+}
+@media (max-width:1060px){
+  .topbar{height:auto;flex:0 0 auto;flex-wrap:wrap;padding:6px 8px;row-gap:4px}
+  .top-actions{flex-wrap:wrap;justify-content:flex-end}
+}

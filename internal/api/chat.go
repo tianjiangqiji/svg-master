@@ -63,6 +63,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, "请求工作区与当前工程类型不一致")
 		return
 	}
+	// 非像素模式必须有主题或参考图；否则会上游回落到默认的鹈鹕演示主题。
+	if !isPixel && strings.TrimSpace(in.Prompt) == "" && len(in.Images) == 0 {
+		writeErr(w, http.StatusBadRequest, "提示词不能为空")
+		return
+	}
 	st := s.store.Settings()
 	prov := st.FindProvider(in.Provider)
 	if prov == nil {
@@ -215,6 +220,18 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		case agent.EvSVG:
 			if ev.SVG != "" {
 				_ = s.persistSVG(session, ev.SVG)
+				// 快速 / GIF 模式没有图层工具：交付物必须写回活动图层，
+				// 否则工程快照与「另存为工程」拿到的仍是空图层。
+				if !isPixel && !layerTools {
+					layerBridge := bridge{p: proj}
+					if active := layerBridge.Active(); active != "" {
+						if err := layerBridge.Write(active, ev.SVG); err != nil {
+							send(agent.Event{Kind: agent.EvLog, Level: "warn", Text: "交付内容未写入图层：" + err.Error()})
+						} else {
+							s.markDirty()
+						}
+					}
+				}
 			}
 		}
 		send(ev)
@@ -262,6 +279,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		ContextClearedAt: proj.ContextClearedAt(),
 		Pixel:            pixelBridge,
 		Vision:           caps.Vision,
+		ExportScale:      st.Export.Scale,
 	})
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush() // 注册后立即发送响应头，停止不必等模型产生首条事件。

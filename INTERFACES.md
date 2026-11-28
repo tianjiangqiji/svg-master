@@ -203,7 +203,7 @@ type Compressor interface {
 | `POST /api/validate` | `{svg}` | `Report` |
 | `POST /api/export` | `{svg}` | `{svg}`（只剥外壳，内容原样） |
 | `POST /api/chat` | `{prompt, images:[{mime,data}], canvas, model, providerId, thinking, session, layer, genMode}` | **SSE**，见下 |
-| `POST /api/chat/abort` | `{session}` | `{ok}` |
+| `POST /api/chat/abort` | `{session, runId?, wait?}` | `{ok}` |
 | `POST /api/render-result` | `{session, data, mime}` | `{ok}` |
 
 ### SSE 事件（`data: <json>\n\n`，15s 一次 `: keepalive` 注释）
@@ -212,11 +212,11 @@ type Compressor interface {
 
 ## 3. 前端要点（web-ui）
 
-- 三段式：左栏配置 / 中栏棋盘格画布 / 右栏日志+工具卡片+上下文用量。底部抽屉「原始返回/错误详情」。
+- 三段式：左栏配置 / 中栏棋盘格画布或像素画布 / 右栏用量、图层与模型输出。模型输出按思维链 / 回复 / 错误交替成流，不再有独立页签。
 - 中栏把前端 `sanitizeSVG()` 处理过的副本塞进容器 `innerHTML`（只影响渲染，不改存储/导出的原文）；流式期间每收到 `svg` 事件就重绘。
 - 图片输入：拖拽/粘贴/选择 → 前端缩放到长边 ≤1568px → `canvas.toDataURL('image/png')` → 取 `,` 后 base64 作为 `images[].data`，`mime` 填 `image/png`。
-- 生成方式三级开关（`quick` / `layers` / `anim`）：`genMode` 随 `/api/chat` 下发，是唯一真源；`multiStep` 只是旧字段回落。**切换规则**：未点「开始生成」前三档可自由来回切；点过之后仅当仍停在 `quick` 时留最后一次机会，切走即锁死；在 `anim` 下开始生成后为单向门，只能靠工程弹窗「快速生成」重置。动图模式单图层交付 SMIL 动图，前端提供播放/暂停/帧率与「导出 GIF」（canvas 逐帧 + 自写 GIF89a 编码，纯前端，不经后端）。工程快照 `GET /api/project` 新增 `empty` 字段：所有图层内容为空且无对话历史时为 true，前端据此跳过「快速生成」的清空确认框。
+- 创作模式三级开关（`quick` / `layers` / `pixel`）：`genMode` 随 `/api/chat` 下发，是唯一真源；`multiStep` 只是旧字段回落。**切换规则**：开始生成前三档可自由来回切；点过「开始生成」后锁定，新建/打开工程或清空全部才解锁。快速模式可选「GIF 动图」开关（注入动图交付规范），像素模式用同一开关联动静态/动图形态。新建 SVG 工程默认 `quick`；打开工程沿用当前模式。快速工程手动加到多个图层后生成会被拦下，提示先切到多图层或删到 1 个。工程快照 `GET /api/project` 的 `empty` 字段：所有图层内容为空且无对话历史时为 true，前端据此跳过「快速生成」的清空确认框。
 - 比例预设下拉来自 `/api/canvas`；切换后把 `canvas` 随 `/api/chat` 一起发（只更新尺寸规范）。已生成的 SVG 保持原样，不做重排；下载走前端本地 Blob，不经 `/api/export`。
 - 模型管理面板：供应商列表 + 四协议宫格 + Base URL + Key（密码框）+「获取模型列表」（调 `/api/models`）+ 手动加 id + 能力覆盖表（contextWindow/maxTokens/reasoning/vision 可手改）。
-- 提示词库：分类标签 + 搜索框 + 卡片列表，点击把 `template` 里的 `{{subject}}` 替换为当前主题后填入输入框。
+- 提示词库：分类标签 + 搜索框 + 卡片列表，点击把 `template` 里的 `{{subject}}` 替换为当前主题后填入输入框，并按卡片的 `ratio` 切换到对应画布预设。
 - 视觉风格：深色、紧凑、无圆角浮夸；日志带 `[HH:MM:SS]` 时间戳与彩色标签（对齐截图）。

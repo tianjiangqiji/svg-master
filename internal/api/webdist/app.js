@@ -308,7 +308,38 @@
   let switchingWorkspace = false;
   let preparingPixelRun = false;
   let pixelStop = null;
+  // 提示词按工作区分别保存，并且跟着 data/settings.json 走：
+  // 内置窗口每次可能换端口，localStorage 的 origin 会变，不能用来存关键草稿。
+  // 默认演示主题是空提示词时的回落值（启动与清空后都会用到）。
   const workspacePrompts = { svg: '', pixel: '' };
+  function loadPromptDrafts() {
+    const st = S.settings;
+    if (!st) return;
+    workspacePrompts.svg = typeof st.draftPrompt === 'string' ? st.draftPrompt : '';
+    workspacePrompts.pixel = typeof st.pixelDraftPrompt === 'string' ? st.pixelDraftPrompt : '';
+  }
+  // 输入时先同步到 S.settings（内存），真正的落盘交给 persist 的防抖。
+  function syncDraftsToSettings() {
+    const st = S.settings;
+    if (!st) return;
+    st.draftPrompt = workspacePrompts.svg;
+    st.pixelDraftPrompt = workspacePrompts.pixel;
+  }
+  function writePromptStore() {
+    syncDraftsToSettings();
+    persist();
+  }
+  // 关窗 / 刷新时的兜底：把草稿写进 settings 并尽力同步一次，避免最后几百毫秒的输入丢失。
+  window.addEventListener('pagehide', () => {
+    syncDraftsToSettings();
+    if (!S.settings || !navigator.sendBeacon) return;
+    try {
+      navigator.sendBeacon(
+        '/api/settings?k=' + encodeURIComponent(TOKEN),
+        new Blob([JSON.stringify(S.settings)], { type: 'application/json' }),
+      );
+    } catch { /* 忽略 */ }
+  });
   const isPixel = () => workspace === 'pixel';
   const projectEngine = (pj = S.project) => pj?.engine || 'svg';
   const pixelAnimation = (pj = S.project) => pj?.engine === 'pixel' && pj.pixel?.mode === 'anim' ? pj.pixel.anim : null;
@@ -350,7 +381,7 @@
     const next = engine === 'pixel' && pixel ? 'pixel' : 'svg';
     if (next !== workspace) {
       if (isPixel()) pixel.stopPlayback();
-      workspacePrompts[workspace] = $('prompt').value;
+      workspacePrompts[workspace] = stripGifPrompt($('prompt').value);
       workspace = next;
       setPrompt(workspacePrompts[next] || '');
     }
@@ -461,7 +492,12 @@
     try {
       const st = await api('/api/state');
       S.settings = st.settings;
+      loadPromptDrafts();
       showWorkspace(S.settings?.workspace);
+      // 同一工作区启动时 showWorkspace 不会走切换分支：补回 settings 里保存的草稿。
+      if (stripGifPrompt($('prompt').value) === '' && workspacePrompts[workspace]) {
+        setPrompt(workspacePrompts[workspace]);
+      }
       S.protocols = st.protocols || [];
       S.canvases = st.canvases || [];
       S.prompts = st.prompts || [];
@@ -475,8 +511,12 @@
       initSels();
       renderCanvasSelect();
       applySettingsToLeft();
+      // 工作区与创作模式必须一致：启动时以 genMode 为准校正上次残留的 workspace。
       // 上次退出时处于像素模式 → 启动即恢复像素工作区（工程弹窗随后照常弹出）。
       if (S.genMode === 'pixel' && workspace !== 'pixel' && pixel) showWorkspace('pixel');
+      else if (S.genMode !== 'pixel' && workspace === 'pixel') showWorkspace('svg');
+      // 提示词为空时回落到演示主题；「清空全部」也会回到这里。
+      if (!isPixel() && stripGifPrompt($('prompt').value) === '') setPrompt(S.defaultPrompt);
       renderPromptCats();
       renderPromptGrid();
       renderFlow();
@@ -659,6 +699,12 @@
     $('streamOff').checked = !!st.agent?.streamDisabled;
     $('compressAt').value = st.agent?.compressAt || 75;
     $('compressAtLabel').textContent = ($('compressAt').value) + '%';
+    // 播放设置：帧率上限 / 倍速 / 导出倍率，左栏滑块是唯一入口（右上角不再重复）
+    st.export = st.export || {};
+    if ($('maxFps')) $('maxFps').value = String(clamp(parseInt(st.agent?.maxFps, 10) || 8, 1, 30));
+    if ($('playSpeed')) $('playSpeed').value = String(clamp(parseFloat(st.agent?.playSpeed) || 1, 0.25, 4));
+    if ($('exportScale')) $('exportScale').value = String(clamp(parseInt(st.export.scale, 10) || 2, 1, 16));
+    paintAnimSettingLabels();
     // 生成方式：genMode 是唯一真源；老设置只有 multiStep 时按它推断一次并回写。
     st.agent = st.agent || {};
     S.genMode = normalizeGenMode(st.agent.genMode, st.agent.multiStep);
@@ -666,8 +712,8 @@
     st.agent.multiStep = S.genMode === 'layers';
     $('gifEnabled').checked = !!st.agent.gif;
     syncGenSwitch();
-    if (!S.svg && !isPixel() && stripGifPrompt($('prompt').value) === '') setPrompt(S.defaultPrompt);
-    else setPrompt($('prompt').value);
+    // 这里只做「设置 → 输入框」同步；默认提示词由 boot / 清空流程注入。
+    setPrompt($('prompt').value);
     S.canvas = st.canvas || S.canvas;
     syncCanvasSelect();
     updateBadge();
@@ -862,7 +908,11 @@
     if (!S.settings) return;
     try {
       const r = await api('/api/settings', { method: 'PUT', body: S.settings });
-      if (r && r.settings) S.settings = r.settings;
+      if (r && r.settings) {
+        S.settings = r.settings;
+        // 服务端回包是上一次落盘的草稿；本地可能已经有更新的输入，别用旧值覆盖。
+        syncDraftsToSettings();
+      }
       updateBadge();
     } catch (e) {
       toast('保存设置失败：' + e.message, true);
@@ -894,7 +944,12 @@
       st.agent.compressAt = clamp(parseInt($('compressAt').value, 10) || st.agent.compressAt || 75, 1, 95);
       st.agent.genMode = S.genMode;
       st.agent.multiStep = S.genMode === 'layers';
+      st.agent.maxFps = clamp(parseInt($('maxFps')?.value, 10) || st.agent.maxFps || 8, 1, 30);
+      st.agent.playSpeed = clamp(parseFloat($('playSpeed')?.value) || st.agent.playSpeed || 1, 0.25, 4);
     }
+    st.export = st.export || {};
+    st.export.scale = clamp(parseInt($('exportScale')?.value, 10) || st.export.scale || 2, 1, 16);
+    st.workspace = S.genMode === 'pixel' ? 'pixel' : 'svg';
     st.layers = st.layers || {};
     // 三档下图层文件都在，图层面板始终可用；multiStep 只表示「多图层模式」。
     st.layers.enabled = true;
@@ -945,6 +1000,67 @@
     if (!S.settings) return;
     S.settings.agent.compressAt = parseInt($('compressAt').value, 10) || 75;
     persist();
+  });
+
+  // ── 播放设置（左栏滑块：帧率上限 / 倍速 / 导出倍率）──────────
+  // 拖动时只更新标签与上限，松手（change）才落盘，免得一次拖动打满 PUT。
+  function animSettings() {
+    const st = S.settings || {};
+    const ag = st.agent || {};
+    const ex = st.export || {};
+    return {
+      maxFps: clamp(parseInt(ag.maxFps, 10) || 8, 1, 30),
+      playSpeed: clamp(parseFloat(ag.playSpeed) || 1, 0.25, 4),
+      exportScale: clamp(parseInt(ex.scale, 10) || 2, 1, 16),
+    };
+  }
+  function paintAnimSettingLabels() {
+    const a = animSettings();
+    if ($('maxFpsLabel')) $('maxFpsLabel').textContent = String(a.maxFps);
+    if ($('playSpeedLabel')) $('playSpeedLabel').textContent = a.playSpeed + '×';
+    if ($('exportScaleLabel')) $('exportScaleLabel').textContent = a.exportScale + '×';
+    // 帧率滑块的上限跟着最大帧率走：动画条与像素时间轴一起收紧
+    ['animFps', 'pixelAnimFPS'].forEach((id) => {
+      const node = $(id);
+      if (!node) return;
+      node.max = String(a.maxFps);
+      const v = parseInt(node.value, 10);
+      if (Number.isFinite(v) && v > a.maxFps) node.value = String(a.maxFps);
+    });
+    if (S.anim.fps > a.maxFps) {
+      S.anim.fps = a.maxFps;
+      if ($('animFps')) $('animFps').value = String(a.maxFps);
+      if ($('animFpsLabel')) $('animFpsLabel').textContent = String(a.maxFps);
+      if (S.anim.playing) { animStop(); animPlay(); }
+    }
+  }
+  function applyAnimSetting(key, value) {
+    const st = S.settings;
+    if (!st) return;
+    st.agent = st.agent || {};
+    st.export = st.export || {};
+    if (key === 'maxFps') st.agent.maxFps = clamp(value, 1, 30);
+    else if (key === 'playSpeed') st.agent.playSpeed = clamp(value, 0.25, 4);
+    else if (key === 'exportScale') st.export.scale = clamp(value, 1, 16);
+    paintAnimSettingLabels();
+    if (key === 'playSpeed' && S.anim.playing) { animStop(); animPlay(); }
+    persist();
+  }
+  ['maxFps', 'playSpeed', 'exportScale'].forEach((id) => {
+    const node = $(id);
+    if (!node) return;
+    node.addEventListener('input', () => {
+      const v = parseFloat(node.value);
+      if (id === 'maxFps') {
+        if ($('maxFpsLabel')) $('maxFpsLabel').textContent = String(v);
+        paintAnimSettingLabels();
+      } else if (id === 'playSpeed' && $('playSpeedLabel')) {
+        $('playSpeedLabel').textContent = v + '×';
+      } else if (id === 'exportScale' && $('exportScaleLabel')) {
+        $('exportScaleLabel').textContent = v + '×';
+      }
+    });
+    node.addEventListener('change', () => applyAnimSetting(id, parseFloat(node.value)));
   });
 
   // ── 画布比例 ────────────────────────────────────────────
@@ -1427,11 +1543,13 @@
     });
   }
 
-  // ── 模型输出流（右栏：思维链与正文按到达顺序交替） ────────
-  // 每一段是 { role: 'think' | 'text' | 'err', text }，相邻同 role 合并，不同 role 另起一段。
+  // ── 模型输出流（右栏：思维链 / 正文 / 工具卡片按到达顺序交替） ────
+  // 每一段是 { role: 'think' | 'text' | 'tool' | 'err', text }，相邻同 role 合并，不同 role 另起一段。
+  // tool 段不合并：每次调用一张卡片，靠 callId 与 tool_end 配对。
   const ROLE_META = {
     think: { cls: 'fseg-think', label: '思维链', foldable: true },
     text: { cls: 'fseg-text', label: '回复', foldable: false },
+    tool: { cls: 'fseg-tool', label: '工具', foldable: true },
     err: { cls: 'fseg-err', label: '错误', foldable: false },
   };
 
@@ -1574,7 +1692,7 @@
   function pushFlow(role, chunk) {
     if (!chunk) return;
     const last = S.flow[S.flow.length - 1];
-    if (last && last.role === role) last.text += chunk;
+    if (last && last.role === role && role !== 'tool') last.text += chunk;
     else S.flow.push({ role, text: chunk, folded: role === 'think' ? false : undefined });
     scheduleFlow();
   }
@@ -1596,23 +1714,45 @@
   }
 
   function fillSegBody(pre, seg) {
-    if (seg.role === 'err') { pre.textContent = seg.text; return; }
+    // 错误与工具输出是原始文本（日志、JSON 片段），不走 Markdown，免得吃掉缩进
+    if (seg.role === 'err' || seg.role === 'tool') { pre.textContent = seg.text || ''; return; }
     pre.innerHTML = '';
     pre.appendChild(renderMarkdown(seg.text));
+  }
+
+  // 工具卡片右侧的状态徽标：运行中 / 完成 / 失败
+  function toolBadge(seg) {
+    const st = seg.status || 'ok';
+    const text = st === 'run' ? '运行中' : st === 'fail' ? '失败' : '完成';
+    return el('span', 'fh-badge ' + st, text);
   }
 
   // 造一段（思维链 / 正文 / 错误）。展开态思维链自带限高滚动条，位置记在 seg 上。
   function flowSegNode(seg, i) {
     const meta = ROLE_META[seg.role] || ROLE_META.text;
+    const isTool = seg.role === 'tool';
     const wrap = el('div', 'fseg ' + meta.cls);
     wrap.dataset.i = String(i);
-    if (seg.role === 'think' && seg.folded) wrap.classList.add('folded');
+    if (seg.folded) wrap.classList.add('folded');
+    if (isTool) {
+      wrap.classList.add('st-' + (seg.status || 'ok'));
+      if (seg.status === 'fail') wrap.classList.add('failed');
+    }
     const head = el('div', 'fseg-head');
-    head.appendChild(el('span', 'fh-label', meta.label));
-    if (seg.text.length > 40) head.appendChild(el('span', 'fh-cnt', seg.text.length + ' 字'));
+    if (isTool) {
+      const label = el('span', 'fh-label');
+      label.appendChild(el('span', 'tool-name', seg.tool || 'tool'));
+      if (seg.args) label.appendChild(el('span', 'fh-args', seg.args));
+      head.appendChild(label);
+      head.appendChild(toolBadge(seg));
+      head.title = seg.args || seg.tool || '';
+    } else {
+      head.appendChild(el('span', 'fh-label', meta.label));
+      if (seg.text.length > 40) head.appendChild(el('span', 'fh-cnt', seg.text.length + ' 字'));
+    }
     if (meta.foldable) {
       const f = el('span', 'fh-fold', seg.folded ? '▸' : '▾');
-      f.title = seg.folded ? '展开思维链' : '折叠思维链';
+      f.title = seg.folded ? '展开' : '折叠';
       f.addEventListener('click', (e) => {
         e.stopPropagation();
         seg.folded = !seg.folded;
@@ -1623,7 +1763,7 @@
     wrap.appendChild(head);
     if (meta.foldable && seg.folded) {
       head.addEventListener('click', () => { seg.folded = false; renderFlow(true); });
-      head.title = '展开思维链';
+      head.title = '展开';
     }
     const pre = el('div', 'fseg-body md');
     fillSegBody(pre, seg);
@@ -1666,7 +1806,17 @@
         const pre = node.querySelector(':scope > .fseg-body');
         const head = node.querySelector(':scope > .fseg-head');
         if (pre) fillSegBody(pre, last);
-        if (head) {
+        if (head && last.role === 'tool') {
+          // 工具卡片：tool_end 到位时只换徽标，不重建整段（滚动位置天然保住）
+          const old = head.querySelector('.fh-badge');
+          const badge = toolBadge(last);
+          if (old) old.replaceWith(badge);
+          else head.insertBefore(badge, head.querySelector('.fh-fold'));
+          node.classList.remove('st-run', 'st-ok', 'st-fail');
+          node.classList.add('st-' + (last.status || 'ok'));
+          node.classList.toggle('failed', last.status === 'fail');
+        }
+        if (head && last.role !== 'tool') {
           let cnt = head.querySelector('.fh-cnt');
           if (last.text.length > 40) {
             if (!cnt) {
@@ -1772,7 +1922,7 @@
     $('usageSteps').textContent = `${st.modelSteps || 0} / ${st.toolCalls || 0}`;
   }
 
-  // ── 工具调用摘要（只进日志流，不再有独立卡片列表） ──────
+  // ── 工具调用卡片（右栏模型输出里的一段：名字 + 参数 + 状态 + 结果） ──
   function argsSummary(args) {
     if (args == null) return '';
     let s;
@@ -1783,13 +1933,50 @@
     s = s.replace(/\s+/g, ' ');
     return s.length > 110 ? s.slice(0, 110) + '…' : s;
   }
+  // 结果正文保留换行（读写文件的回显、命令输出都靠缩进可读），只压掉过长的尾巴
+  function resultBody(text) {
+    const s = String(text == null ? '' : text).replace(/\r\n/g, '\n').trim();
+    return s.length > 4000 ? s.slice(0, 4000) + '\n…（已截断）' : s;
+  }
+  // 找对应的「还在运行中」的工具段：优先 callId，其次工具名
+  function findToolSeg(ev) {
+    for (let i = S.flow.length - 1; i >= 0; i -= 1) {
+      const s = S.flow[i];
+      if (s.role !== 'tool' || s.status !== 'run') continue;
+      if (ev.callId && s.callId && s.callId !== ev.callId) continue;
+      if (ev.tool && s.tool && s.tool !== ev.tool) continue;
+      return s;
+    }
+    return null;
+  }
   function toolStart(ev) {
+    S.flow.push({
+      role: 'tool',
+      tool: ev.tool || 'tool',
+      callId: ev.callId || '',
+      status: 'run',
+      args: argsSummary(ev.args),
+      text: '',
+      folded: false,
+    });
+    scheduleFlow();
     addLog('TOOL', `▶ ${ev.tool || 'tool'} ${argsSummary(ev.args)}`);
   }
   function toolEnd(ev) {
     const failed = !!(ev.error && ev.error.length);
-    const res = ev.result || '';
-    addLog('TOOL', `■ ${ev.tool || 'tool'} ${failed ? '失败：' + ev.error : '完成' + (res ? ' · ' + res.replace(/\s+/g, ' ').slice(0, 160) : '')}`);
+    let seg = findToolSeg(ev);
+    if (!seg) {
+      // 没收到 tool_start（断线重连、事件被裁掉）时补一张卡片，别把结果丢掉
+      seg = { role: 'tool', tool: ev.tool || 'tool', callId: ev.callId || '', status: 'run', args: '', text: '', folded: false };
+      S.flow.push(seg);
+    }
+    seg.status = failed ? 'fail' : 'ok';
+    seg.text = failed ? resultBody(ev.error) : resultBody(ev.result);
+    if (ev.tool) seg.tool = ev.tool;
+    if (S.flow[S.flow.length - 1] === seg) scheduleFlow();
+    else renderFlow(true); // 中间段变了，只能整块重排
+    const res = String(ev.result || '').replace(/\s+/g, ' ');
+    addLog('TOOL', `■ ${ev.tool || 'tool'} ${failed ? '失败：' + ev.error : '完成' + (res ? ' · ' + res.slice(0, 160) : '')}`);
   }
 
   // ── ask 卡片 ────────────────────────────────────────────
@@ -1942,7 +2129,10 @@
     const base = stripGifPrompt(value);
     const next = gifActive() ? base + GIF_SUFFIX : base;
     ta.value = next;
-    workspacePrompts[workspace] = next;
+    workspacePrompts[workspace] = base;
+    // setPrompt 只发生在离散动作（启动、切换、清空、套模板）上，直接落盘；
+    // 逐字输入走 input 事件里的防抖写入。
+    writePromptStore();
   }
   $('prompt').addEventListener('beforeinput', (event) => {
     if (!gifActive()) return;
@@ -1966,7 +2156,9 @@
       ta.value = next;
       ta.setSelectionRange(position, position);
     }
-    workspacePrompts[workspace] = next;
+    workspacePrompts[workspace] = base;
+    syncDraftsToSettings();
+    persist();
   });
   $('gifEnabled').addEventListener('change', () => {
     if (!S.settings) return;
@@ -2060,7 +2252,10 @@
       wrap.title = frozen ? genBlockReason() : '拖动或点击切换';
     }
     $('gifOption').classList.toggle('hidden', S.genMode !== 'quick' && S.genMode !== 'pixel');
+    // 播放设置与 GIF 开关同一可见条件：只有会产出动图/像素动画时才需要它
+    $('animSettings')?.classList.toggle('hidden', S.genMode !== 'quick' && S.genMode !== 'pixel');
     $('gifEnabled').checked = !!S.settings?.agent?.gif;
+    paintAnimSettingLabels();
     renderGenHint();
     syncAnimBar();
   }
@@ -2093,6 +2288,8 @@
       S.settings.agent = S.settings.agent || {};
       S.settings.agent.genMode = target;
       S.settings.agent.multiStep = target === 'layers';
+      // workspace 与 genMode 同步落盘，避免重启后出现「像素工作区 + 快速模式」的错位。
+      S.settings.workspace = target === 'pixel' ? 'pixel' : 'svg';
     }
     setPrompt($('prompt').value);
     syncGenSwitch();
@@ -2242,7 +2439,12 @@
     animAnalyze();
     const a = S.anim;
     const fps = $('animFps');
-    if (fps && String(fps.value) !== String(a.fps)) fps.value = String(a.fps);
+    if (fps) {
+      const cap = animSettings().maxFps;
+      if (a.fps > cap) a.fps = cap;
+      if (String(fps.value) !== String(a.fps)) fps.value = String(a.fps);
+      if ($('animFpsLabel')) $('animFpsLabel').textContent = String(a.fps);
+    }
     const pos = $('animPos');
     if (pos) pos.textContent = animPos();
     const play = $('btnAnimPlay');
@@ -2273,7 +2475,7 @@
         animShowFrame(r, a.index);
         const pos = $('animPos');
         if (pos && !a.busy) pos.textContent = animPos();
-      }, Math.round(1000 / clamp(a.fps, 1, 30)));
+      }, Math.round(1000 / (clamp(a.fps, 1, animSettings().maxFps) * animSettings().playSpeed)));
       a.playing = true;
     } else if (a.source === 'smil') {
       if (typeof root.unpauseAnimations === 'function') root.unpauseAnimations();
@@ -2350,45 +2552,36 @@
     return new XMLSerializer().serializeToString(root);
   }
 
-  function renderGifTimeline() {
-    const bar = $('gifTimeline');
-    const track = $('gifTimelineTrack');
-    if (!bar || !track) return;
-    const on = S.genMode === 'quick' && gifActive();
-    bar.classList.toggle('hidden', !on);
-    if (!on) { track.innerHTML = ''; return; }
-    const root = animRoot();
-    const groups = animGroups(root);
-    if (!root || groups.length < 1) {
-      track.innerHTML = '<div class="gif-timeline-empty">帧将在生成后出现在这里，可逐帧删除、复制或重绘</div>';
-      return;
-    }
-    track.innerHTML = '';
-    groups.forEach((g, i) => {
-      const card = document.createElement('div');
-      card.className = 'gif-frame' + (i === S.anim.index ? ' active' : '');
-      card.dataset.frameIndex = String(i);
-      card.tabIndex = 0;
-      card.setAttribute('role', 'button');
-      card.title = '第 ' + (i + 1) + ' 帧 · 点击预览';
-      const img = document.createElement('img');
-      img.className = 'gif-frame-thumb';
-      img.alt = '第 ' + (i + 1) + ' 帧';
-      img.src = gifFrameThumb(root, g);
-      const label = document.createElement('span');
-      label.className = 'gif-frame-index';
-      label.textContent = String(i + 1);
-      const ops = document.createElement('span');
-      ops.className = 'gif-frame-ops';
-      const mkOp = (labelText, cls, title) => {
-        const b = document.createElement('button');
-        b.type = 'button'; b.textContent = labelText; b.className = cls; b.title = title;
-        return b;
-      };
-      ops.append(mkOp('✕', 'del', '删除此帧'), mkOp('⧉', 'copy', '复制此帧到末尾'), mkOp('↻', 'redraw', '以此帧为焦点重绘'));
-      card.append(img, label, ops);
-      track.appendChild(card);
-    });
+  // 造一张帧卡片（缩略图 + 序号 + 三个操作）
+  function gifFrameCard(root, group, i) {
+    const card = document.createElement('div');
+    card.className = 'gif-frame' + (i === S.anim.index ? ' active' : '');
+    card.dataset.frameIndex = String(i);
+    card.tabIndex = 0;
+    card.setAttribute('role', 'button');
+    card.title = '第 ' + (i + 1) + ' 帧 · 点击预览';
+    const img = document.createElement('img');
+    img.className = 'gif-frame-thumb';
+    img.alt = '第 ' + (i + 1) + ' 帧';
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    img.src = gifFrameThumb(root, group);
+    const label = document.createElement('span');
+    label.className = 'gif-frame-index';
+    label.textContent = String(i + 1);
+    const ops = document.createElement('span');
+    ops.className = 'gif-frame-ops';
+    const mkOp = (labelText, cls, title) => {
+      const b = document.createElement('button');
+      b.type = 'button'; b.textContent = labelText; b.className = cls; b.title = title;
+      return b;
+    };
+    ops.append(mkOp('✕', 'del', '删除此帧'), mkOp('⧉', 'copy', '复制此帧到末尾'), mkOp('↻', 'redraw', '以此帧为焦点重绘'));
+    card.append(img, label, ops);
+    return card;
+  }
+
+  function gifAddButton() {
     const add = document.createElement('button');
     add.type = 'button';
     add.className = 'gif-frame-add';
@@ -2403,7 +2596,57 @@
       last.parentNode.insertBefore(copy, last.nextSibling);
       gifApplySVG(gifSerialize());
     });
-    track.appendChild(add);
+    return add;
+  }
+
+  // 时间轴的增量状态：只有画布 SVG 或帧数变了才重建卡片。
+  // 每次 syncAnimBar 都重算 N 份 base64 缩略图是 GIF 模式最主要的卡顿来源。
+  const gifTimelineRS = { svg: '', count: -1, index: -1 };
+
+  function renderGifTimeline() {
+    const bar = $('gifTimeline');
+    const track = $('gifTimelineTrack');
+    if (!bar || !track) return;
+    const on = S.genMode === 'quick' && gifActive();
+    bar.classList.toggle('hidden', !on);
+    if (!on) {
+      if (gifTimelineRS.count !== -1) {
+        track.innerHTML = '';
+        gifTimelineRS.svg = '';
+        gifTimelineRS.count = -1;
+        gifTimelineRS.index = -1;
+      }
+      return;
+    }
+    const root = animRoot();
+    const groups = animGroups(root);
+    if (!root || groups.length < 1) {
+      if (gifTimelineRS.count !== 0) {
+        track.innerHTML = '<div class="gif-timeline-empty">帧将在生成后出现在这里，可逐帧删除、复制或重绘</div>';
+        gifTimelineRS.svg = '';
+        gifTimelineRS.count = 0;
+        gifTimelineRS.index = -1;
+      }
+      return;
+    }
+    if (gifTimelineRS.svg !== S.svg || gifTimelineRS.count !== groups.length) {
+      const frag = document.createDocumentFragment();
+      groups.forEach((g, i) => frag.appendChild(gifFrameCard(root, g, i)));
+      frag.appendChild(gifAddButton());
+      track.innerHTML = '';
+      track.appendChild(frag);
+      gifTimelineRS.svg = S.svg;
+      gifTimelineRS.count = groups.length;
+      gifTimelineRS.index = S.anim.index;
+      return;
+    }
+    // 内容没变：只同步「当前帧」高亮，不碰缩略图
+    if (gifTimelineRS.index !== S.anim.index) {
+      gifTimelineRS.index = S.anim.index;
+      track.querySelectorAll('.gif-frame').forEach((card) => {
+        card.classList.toggle('active', parseInt(card.dataset.frameIndex, 10) === S.anim.index);
+      });
+    }
   }
 
   $('gifTimelineTrack').addEventListener('click', (event) => {
@@ -2550,6 +2793,9 @@
   }
 
   // rasterizeSVG 把一段 SVG 文本画进 canvas，返回 ImageData。
+  // canvas 与 2D 上下文全局复用一份：逐帧 new canvas 每帧都要新申请绘图表面，
+  // 帧一多（尤其 512 长边）就会明显掉帧，这是导出 GIF 最贵的一步。
+  const rasterSlot = { canvas: null, ctx: null, w: 0, h: 0 };
   function rasterizeSVG(svgText, w, h) {
     return new Promise((resolve, reject) => {
       const blob = new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' });
@@ -2559,10 +2805,17 @@
       img.onload = () => {
         URL.revokeObjectURL(url);
         try {
-          const cv = document.createElement('canvas');
-          cv.width = w;
-          cv.height = h;
-          const ctx = cv.getContext('2d', { willReadFrequently: true });
+          if (!rasterSlot.canvas) {
+            rasterSlot.canvas = document.createElement('canvas');
+            rasterSlot.ctx = rasterSlot.canvas.getContext('2d', { willReadFrequently: true });
+          }
+          if (rasterSlot.w !== w || rasterSlot.h !== h) {
+            rasterSlot.canvas.width = w;
+            rasterSlot.canvas.height = h;
+            rasterSlot.w = w;
+            rasterSlot.h = h;
+          }
+          const ctx = rasterSlot.ctx;
           ctx.clearRect(0, 0, w, h);
           ctx.drawImage(img, 0, 0, w, h);
           resolve(ctx.getImageData(0, 0, w, h));
@@ -2570,6 +2823,14 @@
       };
       img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('这一帧渲染失败')); };
       img.src = url;
+    });
+  }
+
+  // 让出一帧给浏览器：导出时进度文案才能刷出来，长导出也不会把页面冻住。
+  function yieldFrame() {
+    return new Promise((resolve) => {
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => resolve());
+      else setTimeout(resolve, 0);
     });
   }
 
@@ -2599,8 +2860,10 @@
       const source = a.source;
       const frames = a.frames;
       const size = animTargetSize();
-      const fps = clamp(a.fps, 1, 30);
-      const delayCs = Math.max(2, Math.round(100 / fps));
+      // 帧率受左栏「最大帧率」约束，倍速同时作用于播放与导出的每帧停留
+      const speed = animSettings().playSpeed;
+      const fps = clamp(a.fps, 1, animSettings().maxFps);
+      const delayCs = Math.max(2, Math.round(100 / (fps * speed)));
       const enc = new window.GIFEncoder(size.w, size.h, { loop: 0 });
       let made = 0;
 
@@ -2611,18 +2874,21 @@
           const text = svgTextForFrame(svg, i, size.w, size.h);
           const data = await rasterizeSVG(text, size.w, size.h);
           if (enc.addFrame(data.data, delayCs)) made++;
+          await yieldFrame();
         }
       } else if (source === 'smil') {
         const root = animRoot();
         const dur = root ? smilDuration(root) : 2;
-        const total = clamp(Math.round(dur * fps), 2, 48);
+        const step = Math.max(0.25, fps * speed);
+        const total = clamp(Math.round(dur * step), 2, 48);
         for (let i = 0; i < total; i++) {
           const pos = $('animPos');
           if (pos) pos.textContent = `导出中 ${i + 1} / ${total}`;
-          const t = (i / total) * dur;
+          const t = i / step;
           const text = svgTextAtTime(svg, t, size.w, size.h);
           const data = await rasterizeSVG(text, size.w, size.h);
           if (enc.addFrame(data.data, delayCs)) made++;
+          await yieldFrame();
         }
       } else {
         const pos = $('animPos');
@@ -2650,11 +2916,22 @@
 
   // 动图工具条的三个控件
   $('btnAnimPlay')?.addEventListener('click', animToggle);
-  $('animFps')?.addEventListener('change', () => {
+  // 拖动实时生效（标签 + 播放间隔），松手才做一次完整同步
+  $('animFps')?.addEventListener('input', () => {
+    const cap = animSettings().maxFps;
     const v = parseInt($('animFps').value, 10);
-    S.anim.fps = Number.isFinite(v) ? clamp(v, 1, 30) : 8;
+    S.anim.fps = Number.isFinite(v) ? clamp(v, 1, cap) : 8;
+    S.anim.userFps = true;
+    if ($('animFpsLabel')) $('animFpsLabel').textContent = String(S.anim.fps);
+    if (S.anim.playing) { animStop(); animPlay(); }
+  });
+  $('animFps')?.addEventListener('change', () => {
+    const cap = animSettings().maxFps;
+    const v = parseInt($('animFps').value, 10);
+    S.anim.fps = Number.isFinite(v) ? clamp(v, 1, cap) : 8;
     S.anim.userFps = true;
     $('animFps').value = String(S.anim.fps);
+    if ($('animFpsLabel')) $('animFpsLabel').textContent = String(S.anim.fps);
     if (S.anim.playing) { animStop(); animPlay(); }
     syncAnimBar();
   });
@@ -3109,7 +3386,13 @@
         if (r.project.engine === 'pixel' && path === '/api/project/open') pixel.reset();
         applyProject(r.project);
       }
-      if (oldProject?.projectId !== r?.project?.projectId && (oldProject?.engine === 'pixel' || r?.project?.engine === 'pixel')) {
+      // SVG 快照没有 projectId，用目录兜底判断「确实换了工程」。
+      // 另存为只换位置，不换创作上下文，所以不触发重置与解锁。
+      const projectKey = (pj) => (pj && (pj.projectId || pj.dir || pj.name)) || '';
+      const savedAs = path === '/api/project/saveas';
+      const changedProject = path === '/api/project/open' || path === '/api/project/create'
+        || (!savedAs && projectKey(oldProject) !== projectKey(r?.project));
+      if (changedProject) {
         S.session = '';
         S.liveSession = '';
         S.rawText = S.thinkText = S.errText = '';
@@ -3122,17 +3405,21 @@
       closeModal('modalProject', true);
       closeModal('modalNewProj');
       await loadProjectMeta();
-      // 新建、打开或清空工程是新的创作上下文；另存为不解除当前锁。
-      if (path === '/api/project/open' || oldProject?.projectId !== r?.project?.projectId) {
+      // 新建、打开工程是新的创作上下文；另存为不解除当前锁。
+      if (changedProject) {
         const target = r.project?.engine === 'pixel'
           ? 'pixel'
-          : body?.mode === 'quick' || S.genMode === 'pixel' ? 'quick' : S.genMode;
+          // 用户确认：新建的 SVG 工程默认使用快速模式，需要分层时再手动切换。
+          : path === '/api/project/create'
+            ? 'quick'
+            : body?.mode === 'quick' || S.genMode === 'pixel' ? 'quick' : S.genMode;
         S.genLocked = false;
         S.genMode = target;
         if (S.settings) {
           S.settings.agent = S.settings.agent || {};
           S.settings.agent.genMode = target;
           S.settings.agent.multiStep = target === 'layers';
+          S.settings.workspace = r.project?.engine === 'pixel' ? 'pixel' : 'svg';
         }
         setPrompt($('prompt').value);
         syncGenSwitch();
@@ -3317,14 +3604,24 @@
     const pendingSeq = S.runSeq;
     if (!S.settings) { toast('设置尚未加载', true); return; }
     syncInputsToSettings();
-    let prompt = $('prompt').value.trim();
+    const rawPrompt = $('prompt').value;
+    // GIF 开关会在输入框末尾挂一段固定后缀；判断「用户到底写了没有」只看后缀之前的部分，
+    // 否则清空后残留的后缀会被当成有效提示词，直接拿一段没有主题的指令去生成。
+    const basePrompt = stripGifPrompt(rawPrompt).trim();
+    let prompt = rawPrompt.trim();
     // GIF 开启时把时间轴状态告知模型：帧数、帧率与当前编辑到的位置。
     if (!pixelRun && gifActive() && S.anim.source === 'frames' && S.anim.frames > 1) {
       prompt += `\n\n[时间轴状态] 当前画布按帧分组交付，共 ${S.anim.frames} 帧，帧率 ${S.anim.fps}fps；如需增删改帧请按 data-frame 顺序输出完整分组。`;
     }
     const pixelMode = pixelRun ? $('pixelDraft').value : '';
     const implicitPrompt = pixelRun && (pixelMode === 'vision' ? pixel.hasAssets : pixelMode === 'quantize' && pixel.canDraft);
-    if (!prompt && !implicitPrompt) { $('prompt').focus(); toast('请先填写提示词', true); return; }
+    if (!basePrompt && !implicitPrompt) { $('prompt').focus(); toast('请先填写提示词', true); return; }
+    // 手动加过图层的快速工程不能直接生成：快速模式交付的是整幅单层画面，
+    // 写进活动图层会与其它层叠在一起；先让用户明确切到多图层或删掉多余图层。
+    if (!pixelRun && S.genMode === 'quick' && layerCount() > 1) {
+      toast(`当前工程有 ${layerCount()} 个图层：快速模式只能交付单层画面，请切到多图层模式或先把图层删到 1 个`, true);
+      return;
+    }
     const p = activeProvider();
     if (!p) { toast('没有可用供应商', true); return; }
     const model = (S.settings.activeModel || '').trim();
@@ -3747,7 +4044,8 @@
     confirmBox({
       title: '清空全部',
       icon: '!',
-      text: '将停止当前生成，并清空画布、全部图层内容、对话上下文、日志、原始输出和已加载图片。',
+      text: '将停止当前生成，并清空画布、全部图层内容、对话上下文、日志、原始输出和已加载图片'
+        + (isPixel() ? '。' : '；提示词会恢复为默认主题。'),
       ok: '清空全部',
       onOk: async () => {
         S.clearing = true;
@@ -3774,7 +4072,8 @@
         S.liveSession = '';
         S.runID = '';
         S.images = [];
-        setPrompt('');
+        // 用户确认：清空后应回到默认提示词（像素工作区没有通用默认主题，保持为空）。
+        setPrompt(isPixel() ? '' : S.defaultPrompt);
         previewSVG = '';
         S.livePreview = false;
         if (isPixel()) {
@@ -4482,6 +4781,8 @@
     const cur = ta.value;
     const subject = extractSubject(cur);
     let text = (p.template || '').split('{{subject}}').join(subject);
+    // 生成中不切画布：本轮已经按旧画布出图，中途改尺寸只会让下一次校验对不上。
+    if (!S.running) applyPromptCanvas(p);
     setPrompt(text);
     closeModal('modalPrompts');
     ta.focus();
@@ -4492,6 +4793,27 @@
       toast('已填入模板（主题：' + subject + '）');
     }
     addLog('LOG', `提示词模板：${p.title || p.id}`);
+  }
+  // 提示词卡片右上角的 ratio 是画布建议：能对上预设就顺手切过去，
+  // 避免用户填了 16:9 的模板却还在 1:1 画布上生成。
+  function applyPromptCanvas(p) {
+    const ratio = String(p.ratio || '').trim();
+    if (!ratio || !S.canvases.length) return;
+    let idx = S.canvases.findIndex((c) => c.name === ratio);
+    if (idx < 0) {
+      const dims = ratio.match(/(\d+)\s*[×x]\s*(\d+)/i);
+      if (dims) {
+        idx = S.canvases.findIndex((c) => c.width === Number(dims[1]) && c.height === Number(dims[2]));
+      }
+    }
+    if (idx < 0) {
+      const aspect = ratio.match(/(\d+)\s*:\s*(\d+)/);
+      if (aspect) idx = S.canvases.findIndex((c) => c.name.startsWith(aspect[1] + ':' + aspect[2]));
+    }
+    if (idx < 0) return;
+    if (S.canvas && S.canvases[idx].name === S.canvas.name
+      && S.canvases[idx].width === S.canvas.width && S.canvases[idx].height === S.canvas.height) return;
+    applyCanvasIndex(idx);
   }
   function extractSubject(text) {
     if (!text) return '';

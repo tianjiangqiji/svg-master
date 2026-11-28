@@ -30,3 +30,12 @@ node test/pw/gif-export.cjs 'C:\Temp\example.svg'
 ```
 
 这个可选检查会确认十二帧均非空、后续帧与首帧不同、源码保持不变，且导出后预览继续切帧。省略 `GIF_OUTPUT_PATH` 时不保存导出文件。仓库内置的是最小复现样例，不包含用户工程。
+
+## 界面回归
+
+同一套 Playwright 依赖还可以跑两条界面回归（不启动后端，用路由桩返回 `/api/*`）：
+
+```powershell
+node test/pw/pr-ui-adjustments.cjs       # GIF 按钮位置 / 显隐与保存文案
+node test/pw/prompt-project-flow.cjs     # 清空恢复默认提示词、新建项目默认快速、单层交付守卫、GIF 空提示词拦截
+```

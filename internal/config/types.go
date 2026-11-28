@@ -246,6 +246,46 @@ type AgentSettings struct {
 	// MultiStep 是 GenMode 的派生值（layers 时为 true），保留给旧配置与旧代码读取。
 	// 写入时由 NormalizeGenMode 统一回填，不要单独设置它。
 	MultiStep bool `json:"multiStep"`
+	// MaxFPS 帧率上限（左栏滑块），动画播放与 GIF 导出都不越过它。
+	MaxFPS int `json:"maxFps"`
+	// PlaySpeed 播放倍速（左栏滑块），预览与 GIF 导出共用。
+	PlaySpeed float64 `json:"playSpeed"`
+}
+
+// 播放设置（左栏滑块）的取值范围与默认值。
+const (
+	DefaultMaxFPS    = 8
+	MinMaxFPS        = 1
+	MaxMaxFPS        = 30
+	DefaultPlaySpeed = 1.0
+	MinPlaySpeed     = 0.25
+	MaxPlaySpeed     = 4.0
+	// MaxExportScale PNG 导出倍率上限（与前端滑块 1–16 对齐）。
+	MaxExportScale = 16
+)
+
+// NormalizePlayback 把帧率上限与倍速归一到合法区间，返回归一后的副本。
+// 0 值视为未设置，回落到默认值，避免旧配置被清零。
+func NormalizePlayback(a AgentSettings) AgentSettings {
+	if a.MaxFPS == 0 {
+		a.MaxFPS = DefaultMaxFPS
+	}
+	if a.MaxFPS < MinMaxFPS {
+		a.MaxFPS = MinMaxFPS
+	}
+	if a.MaxFPS > MaxMaxFPS {
+		a.MaxFPS = MaxMaxFPS
+	}
+	if a.PlaySpeed == 0 {
+		a.PlaySpeed = DefaultPlaySpeed
+	}
+	if a.PlaySpeed < MinPlaySpeed {
+		a.PlaySpeed = MinPlaySpeed
+	}
+	if a.PlaySpeed > MaxPlaySpeed {
+		a.PlaySpeed = MaxPlaySpeed
+	}
+	return a
 }
 
 // LayerSettings 图层面板行为。
@@ -301,6 +341,11 @@ type Settings struct {
 	Project          ProjectSettings `json:"project"`
 	Canvas           CanvasPreset    `json:"canvas"`
 	Export           ExportSettings  `json:"export"`
+	// DraftPrompt / PixelDraftPrompt 是按工作区保存的提示词草稿；
+	// 两者都随 data 目录持久化，不依赖浏览器 localStorage
+	// （内置窗口每次可能使用不同端口）。
+	DraftPrompt      string `json:"draftPrompt,omitempty"`
+	PixelDraftPrompt string `json:"pixelDraftPrompt,omitempty"`
 }
 
 // DefaultSettings 出厂默认：一个指向 OpenAI 官方地址的空供应商，方便用户直接填 Key。
@@ -327,6 +372,8 @@ func DefaultSettings() Settings {
 			GenMode:    GenModeLayers,
 			GIF:        false,
 			MultiStep:  true,
+			MaxFPS:     DefaultMaxFPS,
+			PlaySpeed:  DefaultPlaySpeed,
 		},
 		Layers: LayerSettings{Enabled: true, PanelHeight: 220},
 		Project: ProjectSettings{
@@ -355,6 +402,8 @@ type SettingsPatch struct {
 	Project          *ProjectSettings `json:"project,omitempty"`
 	Canvas           *CanvasPreset    `json:"canvas,omitempty"`
 	Export           *ExportSettings  `json:"export,omitempty"`
+	DraftPrompt      *string          `json:"draftPrompt,omitempty"`
+	PixelDraftPrompt *string          `json:"pixelDraftPrompt,omitempty"`
 }
 
 // Apply 把增量合并到基线设置上并返回新副本。
@@ -385,7 +434,7 @@ func (p SettingsPatch) Apply(base Settings) Settings {
 		out.ExtendedThinking = *p.ExtendedThinking
 	}
 	if p.Agent != nil {
-		out.Agent = NormalizeGenMode(*p.Agent)
+		out.Agent = NormalizePlayback(NormalizeGenMode(*p.Agent))
 	}
 	if p.Layers != nil {
 		out.Layers = *p.Layers
@@ -399,6 +448,12 @@ func (p SettingsPatch) Apply(base Settings) Settings {
 	if p.Export != nil {
 		out.Export = *p.Export
 	}
+	if p.DraftPrompt != nil {
+		out.DraftPrompt = *p.DraftPrompt
+	}
+	if p.PixelDraftPrompt != nil {
+		out.PixelDraftPrompt = *p.PixelDraftPrompt
+	}
 	return out
 }
 
@@ -406,7 +461,8 @@ func (p SettingsPatch) Apply(base Settings) Settings {
 func (p SettingsPatch) Empty() bool {
 	return p.Workspace == nil && p.Version == nil && p.Providers == nil && p.ActiveProviderID == nil &&
 		p.ActiveModel == nil && p.Thinking == nil && p.FastMode == nil && p.ExtendedThinking == nil && p.Agent == nil &&
-		p.Layers == nil && p.Project == nil && p.Canvas == nil && p.Export == nil
+		p.Layers == nil && p.Project == nil && p.Canvas == nil && p.Export == nil &&
+		p.DraftPrompt == nil && p.PixelDraftPrompt == nil
 }
 
 // ActiveProvider 返回当前选中的供应商（不存在返回 nil）。

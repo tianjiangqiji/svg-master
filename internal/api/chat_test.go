@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -116,6 +117,93 @@ func TestAbortUsesExactRunAndCancelsPendingUpstream(t *testing.T) {
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("停止后仍重试：%d", calls.Load())
+	}
+}
+
+func TestChatRejectsEmptyPrompt(t *testing.T) {
+	_, srv := newTestAPI(t, "http://127.0.0.1:1")
+	resp := apiPost(t, srv, "/api/chat", map[string]string{"prompt": "   "})
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "提示词不能为空") {
+		t.Fatalf("空提示词应返回 400：HTTP %d %s", resp.StatusCode, body)
+	}
+}
+
+// quick 模式没有图层工具，emit_svg 的交付物也必须写回活动图层；
+// 否则工程快照与「另存为工程」拿到的永远是空图层，重启后画面丢失。
+func TestQuickModePersistsDeliveredSVGIntoProject(t *testing.T) {
+	const svgText = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" width="400" height="300"><circle cx="100" cy="100" r="40" fill="#f00"/></svg>`
+	args, err := json.Marshal(map[string]any{"svg": svgText, "note": "red circle"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	emit := func(w http.ResponseWriter, event string, value map[string]any) {
+		value["type"] = event
+		raw, _ := json.Marshal(value)
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, raw)
+	}
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if !strings.Contains(string(raw), `"function_call_output"`) {
+			calls.Add(1)
+			emit(w, "response.output_item.added", map[string]any{
+				"output_index": 0,
+				"item":         map[string]any{"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "emit_svg", "arguments": ""},
+			})
+			emit(w, "response.function_call_arguments.delta", map[string]any{
+				"output_index": 0, "item_id": "fc_1", "delta": string(args),
+			})
+			emit(w, "response.output_item.done", map[string]any{
+				"output_index": 0,
+				"item":         map[string]any{"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "emit_svg", "arguments": string(args)},
+			})
+			emit(w, "response.completed", map[string]any{"response": map[string]any{"id": "resp_1", "status": "completed"}})
+			return
+		}
+		emit(w, "response.output_text.delta", map[string]any{"output_index": 0, "content_index": 0, "delta": "done"})
+		emit(w, "response.completed", map[string]any{"response": map[string]any{"id": "resp_2", "status": "completed"}})
+	}))
+	defer upstream.Close()
+
+	s, srv := newTestAPI(t, upstream.URL)
+	st := s.store.Settings()
+	st.Agent.GenMode = config.GenModeQuick
+	st.Agent.AutoValidate = true
+	st.Canvas = config.CanvasPreset{Name: "测试", Width: 400, Height: 300, ViewBox: "0 0 400 300"}
+	if err := s.store.Save(st); err != nil {
+		t.Fatal(err)
+	}
+	resp := apiPost(t, srv, "/api/chat", map[string]any{
+		"prompt": "red circle", "session": "s1", "runId": "r1", "genMode": "quick",
+		"canvas": config.CanvasPreset{Name: "测试", Width: 400, Height: 300, ViewBox: "0 0 400 300"},
+	})
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("HTTP %d: %s", resp.StatusCode, body)
+	}
+	if calls.Load() == 0 {
+		t.Fatal("模型未收到请求")
+	}
+	p := s.Project()
+	if p == nil || !strings.Contains(p.Render(), `cx="100"`) {
+		t.Fatalf("快速模式交付物未写入工程：%s", p.Render())
+	}
+	active := p.Meta().ActiveLayer
+	content, err := p.LayerContent(active)
+	if err != nil || !strings.Contains(content, `r="40"`) {
+		t.Fatalf("活动图层未保存交付内容：%q %v", content, err)
+	}
+	reopened, err := project.Open(p.Dir(), project.KindQuick)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reopened.Render(), `fill="#f00"`) {
+		t.Fatal("重开工程后快速模式的画面丢失")
 	}
 }
 

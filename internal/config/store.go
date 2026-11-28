@@ -288,7 +288,7 @@ func Normalize(in Settings, prev Settings) (Settings, error) {
 	}
 	out.Agent.TimeoutSec = NormalizeTimeoutSec(out.Agent.TimeoutSec)
 	// 生成方式：合法值原样保留，空/非法值归一，并同步派生的 MultiStep。
-	out.Agent = NormalizeGenMode(out.Agent)
+	out.Agent = NormalizePlayback(NormalizeGenMode(out.Agent))
 	if out.Layers.PanelHeight < 120 || out.Layers.PanelHeight > 900 {
 		out.Layers.PanelHeight = 220
 	}
@@ -301,7 +301,7 @@ func Normalize(in Settings, prev Settings) (Settings, error) {
 	if out.Canvas.Width <= 0 || out.Canvas.Height <= 0 {
 		out.Canvas = DefaultSettings().Canvas
 	}
-	if out.Export.Scale <= 0 || out.Export.Scale > 8 {
+	if out.Export.Scale <= 0 || out.Export.Scale > MaxExportScale {
 		out.Export.Scale = 2
 	}
 	return out, nil
